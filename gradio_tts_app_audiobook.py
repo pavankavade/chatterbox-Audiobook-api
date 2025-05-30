@@ -19,8 +19,8 @@ MULTI_VOICE_DEVICE = "cpu"  # Force CPU for multi-voice processing
 # Default voice library path
 DEFAULT_VOICE_LIBRARY = "voice_library"
 CONFIG_FILE = "audiobook_config.json"
-MAX_CHUNKS_FOR_INTERFACE = 50 # Max dynamic chunk interfaces to create
-MAX_CHUNKS_FOR_AUTO_SAVE = MAX_CHUNKS_FOR_INTERFACE # How many audio players to wire for auto-save on download
+MAX_CHUNKS_FOR_INTERFACE = 100 # Increased from 50 to 100, will add pagination later
+MAX_CHUNKS_FOR_AUTO_SAVE = 100 # Match the interface limit for now
 
 def load_config():
     """Load configuration including voice library path"""
@@ -1935,8 +1935,16 @@ def get_project_chunks(project_name: str) -> list:
         if re.match(pattern, wav_file):
             chunk_files.append(wav_file)
     
-    # Sort by chunk number
-    chunk_files.sort()
+    # Sort by chunk number (numerically, not lexicographically)
+    def extract_chunk_num_from_filename(filename: str) -> int:
+        import re
+        match = re.search(r'_(\d{3})\.wav$', filename)
+        if not match:
+            match = re.search(r'_(\d+)\.wav$', filename)
+        if match:
+            return int(match.group(1))
+        return 0
+    chunk_files = sorted(chunk_files, key=extract_chunk_num_from_filename)
     
     chunks = []
     metadata = project.get('metadata')
@@ -1960,8 +1968,11 @@ def get_project_chunks(project_name: str) -> list:
                     print(f"⚠️ Warning: Could not load voice assignments: {str(e)}")
         
         for i, audio_file in enumerate(chunk_files):
+            # Extract the actual chunk number from the filename instead of using the enumerate index
+            actual_chunk_num = extract_chunk_num_from_filename(audio_file)
+            
             chunk_info = {
-                'chunk_num': i + 1,
+                'chunk_num': actual_chunk_num,  # Use actual chunk number from filename
                 'audio_file': os.path.join(project_path, audio_file),
                 'audio_filename': audio_file,
                 'text': original_chunks[i] if i < len(original_chunks) else "Text not available",
@@ -1995,8 +2006,11 @@ def get_project_chunks(project_name: str) -> list:
     else:
         # Legacy project without metadata
         for i, audio_file in enumerate(chunk_files):
+            # Extract the actual chunk number from the filename instead of using the enumerate index
+            actual_chunk_num = extract_chunk_num_from_filename(audio_file)
+            
             chunk_info = {
-                'chunk_num': i + 1,
+                'chunk_num': actual_chunk_num,  # Use actual chunk number from filename
                 'audio_file': os.path.join(project_path, audio_file),
                 'audio_filename': audio_file,
                 'text': "Legacy project - original text not available",
@@ -2103,8 +2117,8 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
         clear_gpu_memory()
         return None, f"❌ Error regenerating chunk {chunk_num}: {str(e)}"
 
-def load_project_chunks_for_interface(project_name: str) -> tuple:
-    """Load project chunks and return data for interface components"""
+def load_project_chunks_for_interface(project_name: str, page_num: int = 1, chunks_per_page: int = 50) -> tuple:
+    """Load project chunks and return data for interface components with pagination support"""
     if not project_name:
         # Hide all chunk interfaces
         empty_returns = []
@@ -2121,15 +2135,22 @@ def load_project_chunks_for_interface(project_name: str) -> tuple:
         
         return (
             "<div class='voice-status'>📝 Select a project first</div>",  # project_info_summary
-            [],  # current_project_chunks
+            [],  # current_project_chunks (all chunks, not just displayed)
             project_name,  # current_project_name
             "<div class='audiobook-status'>📁 No project loaded</div>",  # project_status
+            gr.Button("📥 Download Full Project Audio", variant="primary", size="lg", interactive=False),  # download_project_btn
+            "<div class='voice-status'>📁 Load a project first to enable download</div>",  # download_status
+            1,  # current_page_state
+            1,  # total_pages_state
+            gr.Button("⬅️ Previous Page", size="sm", interactive=False),  # prev_page_btn
+            gr.Button("➡️ Next Page", size="sm", interactive=False),  # next_page_btn
+            "<div class='voice-status'>📄 No project loaded</div>",  # page_info
             *empty_returns
         )
     
-    chunks = get_project_chunks(project_name)
+    all_chunks = get_project_chunks(project_name)
     
-    if not chunks:
+    if not all_chunks:
         # Hide all chunk interfaces
         empty_returns = []
         for i in range(MAX_CHUNKS_FOR_INTERFACE):
@@ -2148,27 +2169,51 @@ def load_project_chunks_for_interface(project_name: str) -> tuple:
             [],
             project_name,
             f"❌ No audio files found in project '{project_name}'",
+            gr.Button("📥 Download Full Project Audio", variant="primary", size="lg", interactive=False),
+            f"❌ No audio files found in project '{project_name}'",
+            1,  # current_page_state
+            1,  # total_pages_state
+            gr.Button("⬅️ Previous Page", size="sm", interactive=False),  # prev_page_btn
+            gr.Button("➡️ Next Page", size="sm", interactive=False),  # next_page_btn
+            f"❌ No chunks found in project '{project_name}'",  # page_info
             *empty_returns
         )
+    
+    # Calculate pagination
+    total_chunks = len(all_chunks)
+    total_pages = max(1, (total_chunks + chunks_per_page - 1) // chunks_per_page)  # Ceiling division
+    page_num = max(1, min(page_num, total_pages))  # Clamp page number
+    
+    start_idx = (page_num - 1) * chunks_per_page
+    end_idx = min(start_idx + chunks_per_page, total_chunks)
+    chunks_for_current_page = all_chunks[start_idx:end_idx]
     
     # Create project summary
     project_info = f"""
     <div class='audiobook-status'>
         📁 <strong>Project:</strong> {project_name}<br/>
-        🎵 <strong>Total Chunks:</strong> {len(chunks)}<br/>
-        📝 <strong>Type:</strong> {chunks[0]['project_type'].replace('_', ' ').title()}<br/>
-        ✅ <strong>Metadata:</strong> {'Available' if chunks[0]['has_metadata'] else 'Legacy Project'}
+        🎵 <strong>Total Chunks:</strong> {total_chunks}<br/>
+        📄 <strong>Showing:</strong> {len(chunks_for_current_page)} chunks (Page {page_num} of {total_pages})<br/>
+        📝 <strong>Type:</strong> {all_chunks[0]['project_type'].replace('_', ' ').title()}<br/>
+        ✅ <strong>Metadata:</strong> {'Available' if all_chunks[0]['has_metadata'] else 'Legacy Project'}
     </div>
     """
     
-    status_msg = f"✅ Loaded {len(chunks)} chunks from project '{project_name}'"
+    status_msg = f"✅ Loaded page {page_num} of {total_pages} ({len(chunks_for_current_page)} chunks shown, {total_chunks} total) from project '{project_name}'"
+    
+    # Page info
+    page_info_html = f"<div class='voice-status'>📄 Page {page_num} of {total_pages} | Chunks {start_idx + 1}-{end_idx} of {total_chunks}</div>"
+    
+    # Navigation buttons
+    prev_btn = gr.Button("⬅️ Previous Page", size="sm", interactive=(page_num > 1))
+    next_btn = gr.Button("➡️ Next Page", size="sm", interactive=(page_num < total_pages))
     
     # Prepare interface updates
     interface_updates = []
     
     for i in range(MAX_CHUNKS_FOR_INTERFACE):
-        if i < len(chunks):
-            chunk = chunks[i]
+        if i < len(chunks_for_current_page):
+            chunk = chunks_for_current_page[i]
             
             # Voice info display
             if chunk['project_type'] == 'multi_voice':
@@ -2210,11 +2255,16 @@ def load_project_chunks_for_interface(project_name: str) -> tuple:
     
     return (
         project_info,  # project_info_summary
-        chunks,  # current_project_chunks
+        all_chunks,  # current_project_chunks (ALL chunks, not just displayed)
         project_name,  # current_project_name
         status_msg,  # project_status
-        gr.Button("📥 Download Full Project Audio", variant="primary", size="lg", interactive=bool(chunks)),  # download_project_btn
-        f"<div class='voice-status'>✅ Ready to download complete project audio</div>" if chunks else "<div class='voice-status'>📁 Load a project first to enable download</div>",  # download_status
+        gr.Button("📥 Download Full Project Audio", variant="primary", size="lg", interactive=bool(all_chunks)),  # download_project_btn
+        f"<div class='voice-status'>✅ Ready to download complete project audio ({total_chunks} chunks)</div>" if all_chunks else "<div class='voice-status'>📁 Load a project first to enable download</div>",  # download_status
+        page_num,  # current_page_state
+        total_pages,  # total_pages_state
+        prev_btn,  # prev_page_btn
+        next_btn,  # next_page_btn
+        page_info_html,  # page_info
         *interface_updates
     )
 
@@ -2231,83 +2281,148 @@ def combine_project_audio_chunks(project_name: str, output_format: str = "wav") 
     try:
         combined_audio = []
         sample_rate = 24000  # Default sample rate
+        total_samples_processed = 0
         
-        # Sort chunks by chunk number to ensure correct order
-        chunks_sorted = sorted(chunks, key=lambda x: x['chunk_num'])
+        # Sort chunks by chunk number to ensure correct order (not alphabetical)
+        def extract_chunk_number(chunk_info):
+            """Extract chunk number from chunk info for proper numerical sorting"""
+            try:
+                # First try to get chunk_num directly from the chunk info
+                chunk_num = chunk_info.get('chunk_num')
+                if chunk_num is not None:
+                    return int(chunk_num)  # Ensure it's an integer
+            except (ValueError, TypeError):
+                pass
+            
+            # Fallback: try to extract from filename
+            try:
+                filename = chunk_info.get('audio_filename', '') or chunk_info.get('audio_file', '')
+                if filename:
+                    import re
+                    # Look for patterns like "_123.wav" or "_chunk_123.wav"
+                    match = re.search(r'_(\d+)\.wav$', filename)
+                    if match:
+                        return int(match.group(1))
+                    
+                    # Try other patterns like "projectname_123.wav"
+                    match = re.search(r'(\d+)\.wav$', filename)
+                    if match:
+                        return int(match.group(1))
+            except (ValueError, TypeError, AttributeError):
+                pass
+            
+            # Last resort: return 0 (should sort first)
+            print(f"[WARNING] Could not extract chunk number from: {chunk_info}")
+            return 0
         
-        # Load and combine all audio files in order
-        for chunk in chunks_sorted:
-            audio_file = chunk['audio_file']
-            filename = os.path.basename(audio_file)
+        chunks_sorted = sorted(chunks, key=extract_chunk_number)
+        
+        print(f"[INFO] Combining {len(chunks_sorted)} chunks for project '{project_name}'")
+        chunk_numbers = [extract_chunk_number(c) for c in chunks_sorted[:5]]
+        print(f"[DEBUG] First few chunks: {chunk_numbers}")
+        chunk_numbers = [extract_chunk_number(c) for c in chunks_sorted[-5:]]
+        print(f"[DEBUG] Last few chunks: {chunk_numbers}")
+        
+        # Process chunks in batches to manage memory better
+        batch_size = 50
+        for batch_start in range(0, len(chunks_sorted), batch_size):
+            batch_end = min(batch_start + batch_size, len(chunks_sorted))
+            batch_chunks = chunks_sorted[batch_start:batch_end]
             
-            # Double-check: Skip complete files, backup files, temp files
-            if (filename.endswith('_complete.wav') or 
-                '_backup_' in filename or 
-                'temp_regenerated_' in filename):
-                print(f"⚠️ Skipping non-chunk file: {filename}")
-                continue
+            print(f"[INFO] Processing batch {batch_start//batch_size + 1}/{(len(chunks_sorted) + batch_size - 1)//batch_size} (chunks {batch_start+1}-{batch_end})")
             
-            # Only include actual numbered chunk files
-            import re
-            pattern = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
-            if not re.match(pattern, filename):
-                print(f"⚠️ Skipping non-standard file: {filename}")
-                continue
-            
-            if os.path.exists(audio_file):
-                # Read WAV file
+            for chunk_info in batch_chunks:
+                chunk_path = chunk_info.get('audio_file')  # Use 'audio_file' instead of 'audio_path'
+                chunk_num = extract_chunk_number(chunk_info)
+                
+                if not chunk_path or not os.path.exists(chunk_path):
+                    print(f"⚠️ Warning: Chunk {chunk_num} file not found: {chunk_path}")
+                    continue
+                
                 try:
-                    with wave.open(audio_file, 'rb') as wav_file:
-                        sample_rate = wav_file.getframerate()
-                        frames = wav_file.readframes(wav_file.getnframes())
-                        # Convert bytes to numpy array
-                        audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
-                        combined_audio.append(audio_data)
-                        print(f"✅ Added chunk {chunk['chunk_num']}: {filename} ({len(audio_data)} samples)")
+                    with wave.open(chunk_path, 'rb') as wav_file:
+                        chunk_sample_rate = wav_file.getframerate()
+                        chunk_frames = wav_file.getnframes()
+                        chunk_audio_data = wav_file.readframes(chunk_frames)
+                        
+                        # Convert to numpy array (16-bit to float32 for better precision)
+                        chunk_audio_array = np.frombuffer(chunk_audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                        
+                        if sample_rate != chunk_sample_rate:
+                            print(f"⚠️ Warning: Sample rate mismatch in chunk {chunk_num}: {chunk_sample_rate} vs {sample_rate}")
+                            sample_rate = chunk_sample_rate  # Use the chunk's sample rate
+                        
+                        combined_audio.append(chunk_audio_array)
+                        total_samples_processed += len(chunk_audio_array)
+                        
+                        if chunk_num <= 5 or chunk_num % 100 == 0 or chunk_num > len(chunks_sorted) - 5:
+                            print(f"✅ Added chunk {chunk_num}: {os.path.basename(chunk_path)} ({len(chunk_audio_array)} samples)")
+                        
                 except Exception as e:
-                    print(f"⚠️ Error reading {filename}: {str(e)}")
-            else:
-                print(f"⚠️ Warning: Audio file not found: {audio_file}")
+                    print(f"❌ Error reading chunk {chunk_num} ({chunk_path}): {e}")
+                    continue
         
         if not combined_audio:
-            return None, f"❌ No valid audio files found in project '{project_name}'"
+            return None, "❌ No valid audio chunks found to combine"
         
-        # Concatenate all audio
-        full_audio = np.concatenate(combined_audio)
+        print(f"[INFO] Concatenating {len(combined_audio)} chunks...")
+        print(f"[INFO] Total samples to process: {total_samples_processed}")
+        
+        # Concatenate all audio using numpy for efficiency
+        final_audio = np.concatenate(combined_audio, axis=0)
+        
+        print(f"[INFO] Final audio array shape: {final_audio.shape}")
+        print(f"[INFO] Final audio duration: {len(final_audio) / sample_rate / 60:.2f} minutes")
+        
+        # Convert back to int16 for WAV format
+        final_audio_int16 = (final_audio * 32767).astype(np.int16)
         
         # Create output filename
-        safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).replace(' ', '_')
-        output_filename = f"{safe_project_name}_complete.{output_format}"
+        output_filename = f"{project_name}_complete.{output_format}"
         output_path = os.path.join("audiobook_projects", project_name, output_filename)
         
-        # Remove existing complete file to avoid confusion
+        # Save the combined audio file with proper WAV encoding
+        print(f"[INFO] Saving combined audio to: {output_path}")
+        with wave.open(output_path, 'wb') as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(final_audio_int16.tobytes())
+        
+        # Verify the saved file
         if os.path.exists(output_path):
-            try:
-                os.remove(output_path)
-                print(f"🗑️ Removed existing complete file: {output_filename}")
-            except Exception as e:
-                print(f"⚠️ Could not remove existing complete file: {str(e)}")
+            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            
+            # Check the saved file duration
+            with wave.open(output_path, 'rb') as verify_wav:
+                saved_frames = verify_wav.getnframes()
+                saved_rate = verify_wav.getframerate()
+                saved_duration_minutes = saved_frames / saved_rate / 60
+            
+            print(f"[INFO] Saved file size: {file_size_mb:.2f} MB")
+            print(f"[INFO] Saved file duration: {saved_duration_minutes:.2f} minutes")
+            
+            if saved_duration_minutes < (len(final_audio) / sample_rate / 60 * 0.95):  # Allow 5% tolerance
+                print(f"⚠️ WARNING: Saved file duration ({saved_duration_minutes:.2f} min) is significantly shorter than expected ({len(final_audio) / sample_rate / 60:.2f} min)")
         
-        # Save as WAV (Gradio will handle the download)
-        with wave.open(output_path, 'wb') as output_wav:
-            output_wav.setnchannels(1)  # Mono
-            output_wav.setsampwidth(2)  # 16-bit
-            output_wav.setframerate(sample_rate)
-            # Convert back to int16
-            audio_int16 = (full_audio * 32767).astype(np.int16)
-            output_wav.writeframes(audio_int16.tobytes())
+        # Calculate total duration
+        total_duration_seconds = len(final_audio) / sample_rate
+        duration_hours = int(total_duration_seconds // 3600)
+        duration_minutes = int((total_duration_seconds % 3600) // 60)
         
-        # Calculate duration
-        duration_seconds = len(full_audio) / sample_rate
-        duration_minutes = int(duration_seconds // 60)
-        duration_secs = int(duration_seconds % 60)
+        success_message = (
+            f"✅ Combined {len(chunks_sorted)} chunks successfully! "
+            f"🎵 Total duration: {duration_hours}:{duration_minutes:02d} "
+            f"📁 File: {output_filename} "
+            f"🔄 Fresh combination of current chunk files"
+        )
         
-        success_msg = f"✅ Combined {len(combined_audio)} chunks successfully!\n🎵 Total duration: {duration_minutes}:{duration_secs:02d}\n📁 File: {output_filename}\n🔄 Fresh combination of current chunk files"
-        
-        return output_path, success_msg
+        return output_path, success_message
         
     except Exception as e:
-        return None, f"❌ Error combining audio: {str(e)}"
+        error_msg = f"❌ Error combining audio chunks: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        return None, error_msg
 
 def load_previous_project_audio(project_name: str) -> tuple:
     """Load a previous project's combined audio for download in creation tabs"""
@@ -2447,18 +2562,25 @@ def save_trimmed_audio(audio_data, original_file_path: str, chunk_num: int) -> t
         print(f"[DEBUG] Exception in save_trimmed_audio: {str(e)}")
         return f"❌ Error saving trimmed audio for chunk {chunk_num}: {str(e)}", None
 
-def accept_regenerated_chunk(project_name: str, chunk_num: int, regenerated_audio_path: str) -> tuple:
-    """Accept the regenerated chunk by replacing the original audio file and deleting the temp file"""
+def accept_regenerated_chunk(project_name: str, actual_chunk_num_to_accept: int, regenerated_audio_path: str, current_project_chunks_list: list) -> tuple:
+    """Accept the regenerated chunk by replacing the original audio file and deleting the temp file."""
     if not project_name or not regenerated_audio_path:
         return "❌ No regenerated audio to accept", None
     
     try:
-        chunks = get_project_chunks(project_name)
-        if chunk_num < 1 or chunk_num > len(chunks):
-            return f"❌ Invalid chunk number {chunk_num}", None
+        # We already have the correct actual_chunk_num_to_accept and the full list of chunks
+        if actual_chunk_num_to_accept < 1 or actual_chunk_num_to_accept > len(current_project_chunks_list):
+            return f"❌ Invalid actual chunk number {actual_chunk_num_to_accept}", None
         
-        chunk = chunks[chunk_num - 1]
-        original_audio_file = chunk['audio_file']
+        # Find the specific chunk_info using the actual_chunk_num_to_accept
+        # This assumes current_project_chunks_list is sorted and chunk_num is 1-based and matches index+1
+        # More robust: find it by matching 'chunk_num' field
+        chunk_info_to_update = next((c for c in current_project_chunks_list if c['chunk_num'] == actual_chunk_num_to_accept), None)
+        
+        if not chunk_info_to_update:
+            return f"❌ Could not find info for actual chunk {actual_chunk_num_to_accept} in project data.", None
+            
+        original_audio_file = chunk_info_to_update['audio_file']
         
         # Check if temp file exists
         if not os.path.exists(regenerated_audio_path):
@@ -2477,7 +2599,8 @@ def accept_regenerated_chunk(project_name: str, chunk_num: int, regenerated_audi
         temp_files = []
         try:
             for file in os.listdir(project_dir):
-                if file.startswith(f"temp_regenerated_chunk_{chunk_num}_") and file.endswith('.wav'):
+                # Match temp_regenerated_chunk_ACTUALCHUNKNUM_timestamp.wav
+                if file.startswith(f"temp_regenerated_chunk_{actual_chunk_num_to_accept}_") and file.endswith('.wav'):
                     temp_path = os.path.join(project_dir, file)
                     try:
                         os.remove(temp_path)
@@ -2488,47 +2611,40 @@ def accept_regenerated_chunk(project_name: str, chunk_num: int, regenerated_audi
         except Exception as e:
             print(f"⚠️ Warning during temp file cleanup: {str(e)}")
         
-        status_msg = f"✅ Chunk {chunk_num} regeneration accepted!\n💾 Original backed up as: {os.path.basename(backup_file)}\n🗑️ Cleaned up {len(temp_files)} temporary file(s)"
+        status_msg = f"✅ Chunk {actual_chunk_num_to_accept} regeneration accepted!\n💾 Original backed up as: {os.path.basename(backup_file)}\n🗑️ Cleaned up {len(temp_files)} temporary file(s)"
         
         # Return both status message and the path to the NEW audio file (for interface update)
         return status_msg, original_audio_file
         
     except Exception as e:
-        return f"❌ Error accepting chunk {chunk_num}: {str(e)}", None
+        return f"❌ Error accepting chunk {actual_chunk_num_to_accept}: {str(e)}", None
 
-def decline_regenerated_chunk(chunk_num: int, regenerated_audio_path: str = None) -> tuple:
-    """Decline the regenerated chunk and clean up the temporary file"""
+def decline_regenerated_chunk(actual_chunk_num_to_decline: int, regenerated_audio_path: str = None) -> tuple:
+    """Decline the regenerated chunk and clean up the temporary file."""
     
-    # Handle the case where regenerated_audio_path might be a tuple (from Gradio Audio component)
-    # or a string (file path)
     actual_file_path = None
     
     if regenerated_audio_path:
         if isinstance(regenerated_audio_path, tuple):
-            # Gradio Audio component returns (sample_rate, audio_data) or just audio data
-            # In our case, we should have the file path stored differently
-            # For now, we can't get the file path from the tuple, so skip cleanup
-            print(f"⚠️ Warning: Received tuple instead of file path for chunk {chunk_num} decline")
+            print(f"⚠️ Warning: Received tuple instead of file path for chunk {actual_chunk_num_to_decline} decline")
             actual_file_path = None
         elif isinstance(regenerated_audio_path, str):
-            # This is the expected case - a file path string
             actual_file_path = regenerated_audio_path
         else:
             print(f"⚠️ Warning: Unexpected type for regenerated_audio_path: {type(regenerated_audio_path)}")
             actual_file_path = None
     
-    # Clean up temporary file if we have a valid file path
     if actual_file_path and os.path.exists(actual_file_path):
         try:
             os.remove(actual_file_path)
-            print(f"🗑️ Cleaned up declined regeneration: {os.path.basename(actual_file_path)}")
+            print(f"🗑️ Cleaned up declined regeneration for chunk {actual_chunk_num_to_decline}: {os.path.basename(actual_file_path)}")
         except Exception as e:
-            print(f"⚠️ Warning: Could not clean up temp file: {str(e)}")
+            print(f"⚠️ Warning: Could not clean up temp file for chunk {actual_chunk_num_to_decline}: {str(e)}")
     
     return (
         gr.Audio(visible=False),  # Hide regenerated audio
         gr.Row(visible=False),    # Hide accept/decline buttons
-        f"❌ Chunk {chunk_num} regeneration declined. Keeping original audio."
+        f"❌ Chunk {actual_chunk_num_to_decline} regeneration declined. Keeping original audio."
     )
 
 def force_complete_project_refresh():
@@ -2728,49 +2844,257 @@ def auto_save_visual_trims_and_download(project_name: str) -> tuple:
     else:
         return download_result
 
-def save_all_pending_trims_and_combine(project_name: str, loaded_chunks_data: list, *all_audio_component_values) -> tuple:
+def save_all_pending_trims_and_combine(project_name: str, loaded_chunks_data: list, *all_audio_component_values) -> str:
     """
-    Automatically saves visual trims from all loaded audio components for the current project,
-    then combines all project chunks (now including these saved trims) into a single file.
+    Automatically saves visual trims from displayed audio components for the current project,
+    then creates split downloadable files.
     """
     if not project_name:
-        return None, "❌ No project selected for download."
+        return "❌ No project selected for download."
     if not loaded_chunks_data:
-        return None, "❌ No chunks loaded for the project to save or combine."
+        return "❌ No chunks loaded for the project to save or combine."
 
-    print(f"[INFO] Auto-saving trims for project '{project_name}' before combining.")
+    print(f"[INFO] Auto-saving trims for project '{project_name}' before creating split files.")
     auto_save_reports = []
 
     num_loaded_chunks = len(loaded_chunks_data)
     num_audio_components_passed = len(all_audio_component_values)
+    
+    # Only process chunks that have corresponding audio players in the interface
+    max_chunks_to_process = min(num_loaded_chunks, num_audio_components_passed, MAX_CHUNKS_FOR_INTERFACE)
+    
+    print(f"[INFO] Project has {num_loaded_chunks} total chunks, processing first {max_chunks_to_process} for auto-save.")
 
-    for i in range(num_loaded_chunks):
+    for i in range(max_chunks_to_process):
         chunk_info = loaded_chunks_data[i]
         chunk_num = chunk_info['chunk_num']
         original_file_path = chunk_info['audio_file']
 
-        if i < num_audio_components_passed:
-            current_audio_data_from_player = all_audio_component_values[i]
-            if current_audio_data_from_player:  # If there's audio in the player (e.g., (sample_rate, data))
-                print(f"[DEBUG] Auto-saving trim for chunk {chunk_num} (Audio data type: {type(current_audio_data_from_player)})")
-                status_msg, _ = save_visual_trim_to_file(current_audio_data_from_player, original_file_path, chunk_num)
-                auto_save_reports.append(f"Chunk {chunk_num}: {status_msg.splitlines()[0]}") # Take first line of status
-            else:
-                auto_save_reports.append(f"Chunk {chunk_num}: No audio data in player; skipping auto-save.")
+        current_audio_data_from_player = all_audio_component_values[i]
+        if current_audio_data_from_player:  # If there's audio in the player (e.g., (sample_rate, data))
+            print(f"[DEBUG] Auto-saving trim for chunk {chunk_num} (Audio data type: {type(current_audio_data_from_player)})")
+            status_msg, _ = save_visual_trim_to_file(current_audio_data_from_player, original_file_path, chunk_num)
+            auto_save_reports.append(f"Chunk {chunk_num}: {status_msg.splitlines()[0]}") # Take first line of status
         else:
-            # This case should ideally not happen if inputs are correctly wired
-            auto_save_reports.append(f"Chunk {chunk_num}: Mismatch - fewer audio player values than loaded chunks.")
-            print(f"[WARNING] Mismatch for chunk {chunk_num}: {num_audio_components_passed} audio values for {num_loaded_chunks} chunks.")
+            auto_save_reports.append(f"Chunk {chunk_num}: No audio data in player; skipping auto-save.")
 
-    # After attempting to save all trims, proceed to combine
-    print(f"[INFO] Combining chunks for project '{project_name}' after auto-save attempts.")
-    combined_audio_path, combine_status = combine_project_audio_chunks(project_name)
+    # After attempting to save all trims from displayed chunks, create split files instead of one massive file
+    print(f"[INFO] Creating split MP3 files for project '{project_name}' after auto-save attempts.")
+    split_result = combine_project_audio_chunks_split(project_name)
     
-    final_status_message = combine_status
+    final_status_message = split_result
     if auto_save_reports:
-        final_status_message += "\n\n--- Auto-Save Report ---\n" + "\n".join(auto_save_reports)
+        auto_save_summary = f"Auto-saved trims for {max_chunks_to_process} displayed chunks out of {num_loaded_chunks} total chunks."
+        final_status_message = f"--- Auto-Save Report ---\n{auto_save_summary}\n" + "\n".join(auto_save_reports[:10])  # Show first 10 reports
+        if len(auto_save_reports) > 10:
+            final_status_message += f"\n... and {len(auto_save_reports) - 10} more auto-saves."
+        final_status_message += f"\n\n{split_result}"
         
-    return combined_audio_path, final_status_message
+    return final_status_message
+
+def combine_project_audio_chunks_split(project_name: str, chunks_per_file: int = 50, output_format: str = "mp3") -> str:
+    """Create multiple smaller downloadable MP3 files from project chunks"""
+    if not project_name:
+        return "❌ No project selected"
+    
+    chunks = get_project_chunks(project_name)
+    
+    if not chunks:
+        return f"❌ No audio chunks found in project '{project_name}'"
+    
+    try:
+        # Check if pydub is available for MP3 export
+        try:
+            from pydub import AudioSegment
+            mp3_available = True
+        except ImportError:
+            mp3_available = False
+            output_format = "wav"  # Fallback to WAV
+            print("[WARNING] pydub not available, using WAV format instead of MP3")
+        
+        sample_rate = 24000  # Default sample rate
+        
+        # Sort chunks by chunk number to ensure correct order
+        def extract_chunk_number(chunk_info):
+            """Extract chunk number from chunk info for proper numerical sorting"""
+            try:
+                # First try to get chunk_num directly from the chunk info
+                chunk_num = chunk_info.get('chunk_num')
+                if chunk_num is not None:
+                    return int(chunk_num)  # Ensure it's an integer
+            except (ValueError, TypeError):
+                pass
+            
+            # Fallback: try to extract from filename
+            try:
+                filename = chunk_info.get('audio_filename', '') or chunk_info.get('audio_file', '')
+                if filename:
+                    import re
+                    # Look for patterns like "_123.wav" or "_chunk_123.wav"
+                    match = re.search(r'_(\d+)\.wav$', filename)
+                    if match:
+                        return int(match.group(1))
+                    
+                    # Try other patterns like "projectname_123.wav"
+                    match = re.search(r'(\d+)\.wav$', filename)
+                    if match:
+                        return int(match.group(1))
+            except (ValueError, TypeError, AttributeError):
+                pass
+            
+            # Last resort: return 0 (should sort first)
+            print(f"[WARNING] Could not extract chunk number from: {chunk_info}")
+            return 0
+        
+        chunks_sorted = sorted(chunks, key=extract_chunk_number)
+        
+        # Debug: Show first and last few chunk numbers to verify sorting
+        if len(chunks_sorted) > 0:
+            first_few = [extract_chunk_number(c) for c in chunks_sorted[:5]]
+            last_few = [extract_chunk_number(c) for c in chunks_sorted[-5:]]
+            print(f"[DEBUG] First 5 chunk numbers after sorting: {first_few}")
+            print(f"[DEBUG] Last 5 chunk numbers after sorting: {last_few}")
+            
+            # NEW: Also show the actual filenames to verify they match the chunk numbers
+            first_few_files = [os.path.basename(c.get('audio_file', 'unknown')) for c in chunks_sorted[:5]]
+            last_few_files = [os.path.basename(c.get('audio_file', 'unknown')) for c in chunks_sorted[-5:]]
+            print(f"[DEBUG] First 5 filenames after sorting: {first_few_files}")
+            print(f"[DEBUG] Last 5 filenames after sorting: {last_few_files}")
+        
+        print(f"[INFO] Creating {len(chunks_sorted)} chunks into multiple {output_format.upper()} files ({chunks_per_file} chunks per file)")
+        
+        created_files = []
+        total_duration_seconds = 0
+        
+        # Process chunks in groups
+        for file_index in range(0, len(chunks_sorted), chunks_per_file):
+            file_end = min(file_index + chunks_per_file, len(chunks_sorted))
+            file_chunks = chunks_sorted[file_index:file_end]
+            
+            file_number = (file_index // chunks_per_file) + 1
+            
+            # Use actual chunk numbers from the files, not array indices
+            chunk_start = extract_chunk_number(file_chunks[0]) if file_chunks else file_index + 1
+            chunk_end = extract_chunk_number(file_chunks[-1]) if file_chunks else file_end
+            
+            print(f"[INFO] Creating file {file_number}: chunks {chunk_start}-{chunk_end}")
+            
+            # Debug: Show which files will be processed for this part
+            if len(file_chunks) > 0:
+                first_files = [os.path.basename(c.get('audio_file', 'unknown')) for c in file_chunks[:3]]
+                last_files = [os.path.basename(c.get('audio_file', 'unknown')) for c in file_chunks[-3:]]
+                print(f"[DEBUG] Part {file_number} - First 3 files: {first_files}")
+                print(f"[DEBUG] Part {file_number} - Last 3 files: {last_files}")
+            
+            combined_audio = []
+            
+            for chunk_info in file_chunks:
+                chunk_path = chunk_info.get('audio_file')
+                chunk_num = extract_chunk_number(chunk_info)
+                
+                if not chunk_path or not os.path.exists(chunk_path):
+                    print(f"⚠️ Warning: Chunk {chunk_num} file not found: {chunk_path}")
+                    continue
+                
+                try:
+                    with wave.open(chunk_path, 'rb') as wav_file:
+                        chunk_sample_rate = wav_file.getframerate()
+                        chunk_frames = wav_file.getnframes()
+                        chunk_audio_data = wav_file.readframes(chunk_frames)
+                        
+                        # Convert to numpy array
+                        chunk_audio_array = np.frombuffer(chunk_audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                        
+                        if sample_rate != chunk_sample_rate:
+                            sample_rate = chunk_sample_rate
+                        
+                        combined_audio.append(chunk_audio_array)
+                        
+                except Exception as e:
+                    print(f"❌ Error reading chunk {chunk_num} ({chunk_path}): {e}")
+                    continue
+            
+            if not combined_audio:
+                print(f"⚠️ No valid chunks found for file {file_number}")
+                continue
+            
+            # Concatenate audio for this file
+            file_audio = np.concatenate(combined_audio, axis=0)
+            file_duration_seconds = len(file_audio) / sample_rate
+            total_duration_seconds += file_duration_seconds
+            
+            # Convert back to int16 for audio processing
+            file_audio_int16 = (file_audio * 32767).astype(np.int16)
+            
+            # Create output filename
+            output_filename = f"{project_name}_part{file_number:02d}_chunks{chunk_start:03d}-{chunk_end:03d}.{output_format}"
+            output_path = os.path.join("audiobook_projects", project_name, output_filename)
+            
+            if mp3_available and output_format == "mp3":
+                # Use pydub to create MP3 with good compression
+                audio_segment = AudioSegment(
+                    file_audio_int16.tobytes(),
+                    frame_rate=sample_rate,
+                    sample_width=2,
+                    channels=1
+                )
+                # Export as MP3 with good quality settings
+                audio_segment.export(output_path, format="mp3", bitrate="128k")
+            else:
+                # Save as WAV file
+                with wave.open(output_path, 'wb') as wav_file:
+                    wav_file.setnchannels(1)  # Mono
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(file_audio_int16.tobytes())
+            
+            if os.path.exists(output_path):
+                file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+                file_duration_minutes = file_duration_seconds / 60
+                
+                created_files.append({
+                    'filename': output_filename,
+                    'chunks': f"{chunk_start}-{chunk_end}",
+                    'duration_minutes': file_duration_minutes,
+                    'size_mb': file_size_mb
+                })
+                
+                print(f"✅ Created {output_filename}: {file_duration_minutes:.2f} minutes, {file_size_mb:.2f} MB")
+        
+        if not created_files:
+            return "❌ No files were created"
+        
+        # Calculate total statistics
+        total_duration_minutes = total_duration_seconds / 60
+        total_duration_hours = int(total_duration_minutes // 60)
+        remaining_minutes = int(total_duration_minutes % 60)
+        total_size_mb = sum(f['size_mb'] for f in created_files)
+        
+        # Create a summary of all created files
+        file_list = "\n".join([
+            f"📁 {f['filename']} - Chunks {f['chunks']} - {f['duration_minutes']:.1f} min - {f['size_mb']:.1f} MB"
+            for f in created_files
+        ])
+        
+        format_display = output_format.upper()
+        size_comparison = f"📦 Total size: {total_size_mb:.1f} MB ({format_display} format" + (f" - ~70% smaller than WAV!" if output_format == "mp3" else "") + ")"
+        
+        success_message = (
+            f"✅ Created {len(created_files)} downloadable {format_display} files from {len(chunks_sorted)} chunks!\n"
+            f"🎵 Total duration: {total_duration_hours}h {remaining_minutes}m\n"
+            f"{size_comparison}\n\n"
+            f"📁 **Files are saved in your project folder:**\n"
+            f"📂 Navigate to: audiobook_projects/{project_name}/\n\n"
+            f"📋 Files created:\n{file_list}\n\n"
+            f"💡 **Tip:** Browse to your project folder to download individual {format_display} files!"
+        )
+        
+        return success_message
+        
+    except Exception as e:
+        error_msg = f"❌ Error creating split audio files: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        return error_msg
 
 with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     model_state = gr.State(None)
@@ -3380,6 +3704,35 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                         project_status = gr.HTML(
                             "<div class='audiobook-status'>📁 Select a project to view all chunks</div>"
                         )
+                    
+                    # NEW: Pagination Controls
+                    with gr.Group():
+                        gr.HTML("<h3>📄 Chunk Navigation</h3>")
+                        
+                        with gr.Row():
+                            chunks_per_page = gr.Dropdown(
+                                choices=[("25 chunks", 25), ("50 chunks", 50), ("100 chunks", 100)],
+                                label="Chunks per page",
+                                value=50,
+                                info="How many chunks to show at once"
+                            )
+                            
+                            current_page = gr.Number(
+                                label="Current Page",
+                                value=1,
+                                minimum=1,
+                                step=1,
+                                interactive=True,
+                                info="Current page number"
+                            )
+                        
+                        with gr.Row():
+                            prev_page_btn = gr.Button("⬅️ Previous Page", size="sm", interactive=False)
+                            next_page_btn = gr.Button("➡️ Next Page", size="sm", interactive=False)
+                            go_to_page_btn = gr.Button("🔄 Go to Page", size="sm")
+                        
+                        # Page info display
+                        page_info = gr.HTML("<div class='voice-status'>📄 Load a project to see pagination info</div>")
                 
                 with gr.Column(scale=2):
                     # Project Information Display
@@ -3396,37 +3749,20 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                             "<div class='audiobook-status'>📚 Project chunks will appear here after loading</div>"
                         )
                         
-                        # Download Section
+                        # Download Section - Simplified 
                         with gr.Group():
-                            gr.HTML("<h4>💾 Download Complete Project</h4>")
+                            gr.HTML("<h4>💾 Download Project</h4>")
                             
-                            with gr.Row():
-                                download_project_btn = gr.Button(
-                                    "📥 Download Full Project Audio",
-                                    variant="primary",
-                                    size="lg",
-                                    interactive=False
-                                )
-                                
-                                refresh_download_btn = gr.Button(
-                                    "🔄 Refresh Download",
-                                    size="sm"
-                                )
-                                
-                                cleanup_temp_btn = gr.Button(
-                                    "🗑️ Clean Temp Files",
-                                    size="sm",
-                                    variant="secondary"
-                                )
-                            
-                            # Download status and file
-                            download_status = gr.HTML(
-                                "<div class='voice-status'>📁 Load a project first to enable download</div>"
+                            download_project_btn = gr.Button(
+                                "📥 Download Project as Split MP3 Files",
+                                variant="primary",
+                                size="lg",
+                                interactive=False
                             )
                             
-                            download_file = gr.File(
-                                label="📁 Download Complete Audio File",
-                                visible=False
+                            # Download status
+                            download_status = gr.HTML(
+                                "<div class='voice-status'>📁 Load a project first to enable download</div>"
                             )
             
             # Dynamic chunk interface - created when project is loaded
@@ -3536,6 +3872,8 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             # Hidden states for chunk management
             current_project_chunks = gr.State([])
             current_project_name = gr.State("")
+            current_page_state = gr.State(1)
+            total_pages_state = gr.State(1)
             
             # Instructions for Regeneration
             gr.HTML("""
@@ -3796,10 +4134,57 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     # Load project chunks
     load_project_btn.click(
         fn=load_project_chunks_for_interface,
-        inputs=project_dropdown,
-        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status] + chunk_outputs
+        inputs=[project_dropdown, current_page, chunks_per_page],
+        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status, current_page_state, total_pages_state, prev_page_btn, next_page_btn, page_info] + chunk_outputs
     )
     
+    # Pagination controls
+    def go_to_previous_page(current_project_name_val, current_page_val, chunks_per_page_val):
+        if not current_project_name_val:
+            return load_project_chunks_for_interface("", 1, chunks_per_page_val)
+        new_page = max(1, current_page_val - 1)
+        return load_project_chunks_for_interface(current_project_name_val, new_page, chunks_per_page_val)
+    
+    def go_to_next_page(current_project_name_val, current_page_val, chunks_per_page_val, total_pages_val):
+        if not current_project_name_val:
+            return load_project_chunks_for_interface("", 1, chunks_per_page_val)
+        new_page = min(total_pages_val, current_page_val + 1)
+        return load_project_chunks_for_interface(current_project_name_val, new_page, chunks_per_page_val)
+    
+    def go_to_specific_page(current_project_name_val, page_num, chunks_per_page_val):
+        if not current_project_name_val:
+            return load_project_chunks_for_interface("", 1, chunks_per_page_val)
+        return load_project_chunks_for_interface(current_project_name_val, page_num, chunks_per_page_val)
+    
+    def change_chunks_per_page(current_project_name_val, chunks_per_page_val):
+        if not current_project_name_val:
+            return load_project_chunks_for_interface("", 1, chunks_per_page_val)
+        return load_project_chunks_for_interface(current_project_name_val, 1, chunks_per_page_val)  # Reset to page 1
+    
+    prev_page_btn.click(
+        fn=go_to_previous_page,
+        inputs=[current_project_name, current_page_state, chunks_per_page],
+        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status, current_page_state, total_pages_state, prev_page_btn, next_page_btn, page_info] + chunk_outputs
+    )
+    
+    next_page_btn.click(
+        fn=go_to_next_page,
+        inputs=[current_project_name, current_page_state, chunks_per_page, total_pages_state],
+        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status, current_page_state, total_pages_state, prev_page_btn, next_page_btn, page_info] + chunk_outputs
+    )
+    
+    go_to_page_btn.click(
+        fn=go_to_specific_page,
+        inputs=[current_project_name, current_page, chunks_per_page],
+        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status, current_page_state, total_pages_state, prev_page_btn, next_page_btn, page_info] + chunk_outputs
+    )
+    
+    chunks_per_page.change(
+        fn=change_chunks_per_page,
+        inputs=[current_project_name, chunks_per_page],
+        outputs=[project_info_summary, current_project_chunks, current_project_name, project_status, download_project_btn, download_status, current_page_state, total_pages_state, prev_page_btn, next_page_btn, page_info] + chunk_outputs
+    )
+
     # Add regeneration handlers for each chunk
     for i, chunk_interface in enumerate(chunk_interfaces):
         chunk_num = i + 1
@@ -3808,37 +4193,71 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         chunk_regen_file_state = gr.State("")
         
         # Use closure to capture chunk_num properly
-        def make_regenerate_handler(chunk_num):
-            def regenerate_handler(model, project_name, voice_lib_path, custom_text):
-                result = regenerate_single_chunk(model, project_name, chunk_num, voice_lib_path, custom_text)
+        def make_regenerate_handler(chunk_num_ui_slot): # This is the 1-based UI slot index
+            def regenerate_handler(model, project_name_state, voice_lib_path, custom_text, current_project_chunks_state, current_page_val, chunks_per_page_val):
+                if not project_name_state:
+                    return None, "❌ No project selected.", ""
+                if not current_project_chunks_state:
+                    return None, "❌ Project chunks not loaded.", ""
+
+                actual_chunk_list_idx = (current_page_val - 1) * chunks_per_page_val + chunk_num_ui_slot - 1
+
+                if actual_chunk_list_idx < 0 or actual_chunk_list_idx >= len(current_project_chunks_state):
+                    return None, f"❌ Calculated chunk index {actual_chunk_list_idx} for UI slot {chunk_num_ui_slot} (Page {current_page_val}) is out of bounds.", ""
+                
+                target_chunk_info = current_project_chunks_state[actual_chunk_list_idx]
+                actual_chunk_number = target_chunk_info['chunk_num'] # The true 1-based chunk number
+
+                print(f"[DEBUG] Regenerate UI Slot {chunk_num_ui_slot} -> Actual Chunk {actual_chunk_number}")
+
+                result = regenerate_single_chunk(model, project_name_state, actual_chunk_number, voice_lib_path, custom_text)
                 if result and len(result) == 2:
                     temp_file_path, status_msg = result
                     if temp_file_path and isinstance(temp_file_path, str):
-                        # Return both the file path (for audio display) and store it for later use
                         return temp_file_path, status_msg, temp_file_path
                     else:
                         return None, status_msg, ""
                 else:
-                    return None, result[1] if result else "Error occurred", ""
+                    error_detail = result[1] if result and len(result) > 1 else "Unknown error"
+                    return None, f"❌ Error regenerating chunk {actual_chunk_number}: {error_detail}", ""
             return regenerate_handler
         
         # Use closure for accept/decline handlers
-        def make_accept_handler(chunk_num):
-            def accept_handler(project_name, regen_file_path):
-                if regen_file_path:
-                    return accept_regenerated_chunk(project_name, chunk_num, regen_file_path)
-                else:
-                    return f"❌ No regenerated file to accept for chunk {chunk_num}", None
+        def make_accept_handler(chunk_num_ui_slot): # This is the 1-based UI slot index
+            def accept_handler(project_name_state, regen_file_path, current_project_chunks_state, current_page_val, chunks_per_page_val):
+                if not project_name_state:
+                    return f"❌ No project selected to accept chunk for.", None
+                if not regen_file_path:
+                    return f"❌ No regenerated file to accept for UI slot {chunk_num_ui_slot}", None
+                if not current_project_chunks_state:
+                     return f"❌ Project chunks not loaded, cannot accept for UI slot {chunk_num_ui_slot}", None
+
+                actual_chunk_list_idx = (current_page_val - 1) * chunks_per_page_val + chunk_num_ui_slot - 1
+                if actual_chunk_list_idx < 0 or actual_chunk_list_idx >= len(current_project_chunks_state):
+                    return f"❌ Calculated chunk index {actual_chunk_list_idx} for UI slot {chunk_num_ui_slot} (Page {current_page_val}) is out of bounds.", None
+                
+                target_chunk_info = current_project_chunks_state[actual_chunk_list_idx]
+                actual_chunk_number = target_chunk_info['chunk_num']
+                
+                print(f"[DEBUG] Accept UI Slot {chunk_num_ui_slot} -> Actual Chunk {actual_chunk_number}")
+                return accept_regenerated_chunk(project_name_state, actual_chunk_number, regen_file_path, current_project_chunks_state)
             return accept_handler
         
-        def make_decline_handler(chunk_num):
-            def decline_handler(regen_file_path):
-                return decline_regenerated_chunk(chunk_num, regen_file_path)
+        def make_decline_handler(chunk_num_ui_slot): # This is the 1-based UI slot index
+            def decline_handler(regen_file_path, current_project_chunks_state, current_page_val, chunks_per_page_val):
+                actual_chunk_number = -1 # Default if not found
+                if current_project_chunks_state:
+                    actual_chunk_list_idx = (current_page_val - 1) * chunks_per_page_val + chunk_num_ui_slot - 1
+                    if 0 <= actual_chunk_list_idx < len(current_project_chunks_state):
+                        target_chunk_info = current_project_chunks_state[actual_chunk_list_idx]
+                        actual_chunk_number = target_chunk_info['chunk_num']
+                print(f"[DEBUG] Decline UI Slot {chunk_num_ui_slot} -> Actual Chunk {actual_chunk_number if actual_chunk_number !=-1 else 'Unknown'}")
+                return decline_regenerated_chunk(actual_chunk_number, regen_file_path)
             return decline_handler
         
         chunk_interface['button'].click(
             fn=make_regenerate_handler(chunk_num),
-            inputs=[model_state, current_project_name, voice_library_path_state, chunk_interface['text']],
+            inputs=[model_state, current_project_name, voice_library_path_state, chunk_interface['text'], current_project_chunks, current_page_state, chunks_per_page],
             outputs=[chunk_interface['regenerated_audio'], chunk_interface['status'], chunk_regen_file_state]
         ).then(
             fn=lambda audio: (gr.Audio(visible=bool(audio)), gr.Row(visible=bool(audio))),
@@ -3849,7 +4268,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         # Accept button handler
         chunk_interface['accept_btn'].click(
             fn=make_accept_handler(chunk_num),
-            inputs=[current_project_name, chunk_regen_file_state],
+            inputs=[current_project_name, chunk_regen_file_state, current_project_chunks, current_page_state, chunks_per_page],
             outputs=[chunk_interface['status'], chunk_interface['audio']]
         ).then(
             fn=lambda: (gr.Audio(visible=False), gr.Row(visible=False), ""),
@@ -3860,7 +4279,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         # Decline button handler  
         chunk_interface['decline_btn'].click(
             fn=make_decline_handler(chunk_num),
-            inputs=chunk_regen_file_state,
+            inputs=[chunk_regen_file_state, current_project_chunks, current_page_state, chunks_per_page],
             outputs=[chunk_interface['regenerated_audio'], chunk_interface['accept_decline_row'], chunk_interface['status']]
         ).then(
             fn=lambda: "",
@@ -3895,33 +4314,41 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             return save_original_trim
         
         # Audio change handler to provide feedback about trimming AND SAVE
-        def make_audio_change_handler(chunk_num_captured):
-            def audio_change_handler(trimmed_audio_data_from_event, current_project_chunks_state_value):
+        def make_audio_change_handler(chunk_num_captured): # chunk_num_captured is the 1-based UI slot index
+            def audio_change_handler(trimmed_audio_data_from_event, current_project_chunks_state_value, current_page_val, chunks_per_page_val):
                 # This is triggered when the Gradio audio component's value changes,
                 # which includes after its internal "Trim" button is pressed.
                 
-                print(f"[DEBUG] audio_change_handler (for saving) triggered for chunk {chunk_num_captured}")
+                print(f"[DEBUG] audio_change_handler (for saving) triggered for UI slot {chunk_num_captured}, page {current_page_val}")
                 print(f"[DEBUG] trimmed_audio_data_from_event type: {type(trimmed_audio_data_from_event)}")
 
                 if not trimmed_audio_data_from_event:
                     # This can happen if the audio is cleared or fails to load
-                    return f"<div class='voice-status'>Chunk {chunk_num_captured} - Audio cleared or no data.</div>", None 
+                    return f"<div class='voice-status'>UI Slot {chunk_num_captured} - Audio cleared or no data.</div>", None 
 
-                if not current_project_chunks_state_value or chunk_num_captured > len(current_project_chunks_state_value):
-                    # This ensures we have project context to find the original file path
-                    return f"❌ Cannot save: No project loaded or invalid chunk {chunk_num_captured}.", None
+                if not current_project_chunks_state_value:
+                    return f"❌ Cannot save: No project chunks loaded.", None
 
-                chunk_info = current_project_chunks_state_value[chunk_num_captured - 1]
-                original_file_path = chunk_info['audio_file']
+                # Calculate actual chunk index in the full project list (0-based)
+                actual_chunk_list_idx = (current_page_val - 1) * chunks_per_page_val + chunk_num_captured - 1
                 
+                if actual_chunk_list_idx < 0 or actual_chunk_list_idx >= len(current_project_chunks_state_value):
+                    return f"❌ Cannot save: Calculated chunk index {actual_chunk_list_idx} is out of bounds for project with {len(current_project_chunks_state_value)} chunks. UI Slot: {chunk_num_captured}, Page: {current_page_val}", None
+
+                chunk_info = current_project_chunks_state_value[actual_chunk_list_idx]
+                original_file_path = chunk_info['audio_file']
+                actual_chunk_number_for_saving = chunk_info['chunk_num'] # This is the true, 1-based chunk number
+                
+                print(f"[DEBUG] UI Slot {chunk_num_captured} corresponds to Actual Chunk Number: {actual_chunk_number_for_saving}, File: {original_file_path}")
+
                 # Call the save function directly
                 status_msg, new_file_path_or_none = save_visual_trim_to_file(
                     trimmed_audio_data_from_event, 
                     original_file_path, 
-                    chunk_num_captured
+                    actual_chunk_number_for_saving # Use the actual chunk number for saving and logging
                 )
                 
-                print(f"[DEBUG] audio_change_handler save for chunk {chunk_num_captured} - status: {status_msg}, new_file_path: {new_file_path_or_none}")
+                print(f"[DEBUG] audio_change_handler save for actual chunk {actual_chunk_number_for_saving} - status: {status_msg}, new_file_path: {new_file_path_or_none}")
                 
                 # The gr.Audio component should be updated with new_file_path_or_none.
                 # If saving failed, new_file_path_or_none will be None, and the audio player will reflect this.
@@ -3930,34 +4357,56 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         
         chunk_interface['audio'].change(
             fn=make_audio_change_handler(chunk_num), # Use the new handler that saves
-            inputs=[chunk_interface['audio'], current_project_chunks], # Pass current_project_chunks
+            inputs=[chunk_interface['audio'], current_project_chunks, current_page_state, chunks_per_page], # Pass states
             outputs=[chunk_interface['status'], chunk_interface['audio']] # Update status AND the audio component
         )
         
-        # REMOVE THIS CLICK HANDLER
-        # chunk_interface['save_original_trim_btn'].click(
-        #     fn=make_save_original_trim_handler(chunk_num),
-        #     inputs=chunk_interface['audio'],
-        #     outputs=[chunk_interface['status'], chunk_interface['audio']]
-        # )
-        
         # Save regenerated trimmed audio handler
-        def make_save_regen_trim_handler(chunk_num):
-            def save_regen_trim(trimmed_audio_data):
-                if not current_project_chunks.value or chunk_num > len(current_project_chunks.value):
-                    return f"❌ No project loaded or invalid chunk number {chunk_num}", None
+        def make_save_regen_trim_handler(chunk_num_ui_slot): # This is the 1-based UI slot index
+            def save_regen_trim(trimmed_regenerated_audio_data, project_name_state, current_project_chunks_state, current_page_val, chunks_per_page_val):
+                if not project_name_state:
+                    return "❌ No project selected.", None
+                if not trimmed_regenerated_audio_data:
+                    return "❌ No trimmed regenerated audio data to save.", None
+                if not current_project_chunks_state:
+                    return "❌ Project chunks not loaded.", None
+
+                actual_chunk_list_idx = (current_page_val - 1) * chunks_per_page_val + chunk_num_ui_slot - 1
+                if actual_chunk_list_idx < 0 or actual_chunk_list_idx >= len(current_project_chunks_state):
+                    return f"❌ Calculated chunk index {actual_chunk_list_idx} for UI slot {chunk_num_ui_slot} (Page {current_page_val}) is out of bounds.", None
                 
-                chunk_info = current_project_chunks.value[chunk_num - 1]
-                original_file_path = chunk_info['audio_file']
+                target_chunk_info = current_project_chunks_state[actual_chunk_list_idx]
+                original_file_path_to_overwrite = target_chunk_info['audio_file']
+                actual_chunk_number = target_chunk_info['chunk_num']
+
+                print(f"[DEBUG] SaveRegenTrim UI Slot {chunk_num_ui_slot} -> Actual Chunk {actual_chunk_number}, Overwriting: {original_file_path_to_overwrite}")
+
+                # Save the trimmed regenerated audio, OVERWRITING the original chunk's file.
+                # This is effectively "accepting" the trimmed regeneration.
+                status_msg, new_file_path = save_visual_trim_to_file(
+                    trimmed_regenerated_audio_data, 
+                    original_file_path_to_overwrite, 
+                    actual_chunk_number
+                )
                 
-                # Save the trimmed regenerated audio as the new original using simplified function
-                return save_visual_trim_to_file(trimmed_audio_data, original_file_path, chunk_num)
+                # Also, attempt to clean up any temp_regenerated files for this chunk, as this action replaces it.
+                project_dir = os.path.dirname(original_file_path_to_overwrite)
+                try:
+                    for file_in_dir in os.listdir(project_dir):
+                        if file_in_dir.startswith(f"temp_regenerated_chunk_{actual_chunk_number}_") and file_in_dir.endswith('.wav'):
+                            temp_path_to_remove = os.path.join(project_dir, file_in_dir)
+                            os.remove(temp_path_to_remove)
+                            print(f"🗑️ Cleaned up old temp regen file: {file_in_dir} after saving trimmed regen.")
+                except Exception as e_cleanup:
+                    print(f"⚠️ Warning during temp file cleanup in SaveRegenTrim: {str(e_cleanup)}")
+
+                return status_msg, new_file_path # new_file_path will be the original_file_path if successful
             return save_regen_trim
         
         chunk_interface['save_regen_trim_btn'].click(
             fn=make_save_regen_trim_handler(chunk_num),
-            inputs=chunk_interface['regenerated_audio'],
-            outputs=[chunk_interface['status'], chunk_interface['audio']]
+            inputs=[chunk_interface['regenerated_audio'], current_project_name, current_project_chunks, current_page_state, chunks_per_page],
+            outputs=[chunk_interface['status'], chunk_interface['audio']] # Updates original audio player
         ).then(
             fn=lambda: (gr.Audio(visible=False), gr.Row(visible=False), ""),
             inputs=[],
@@ -4017,35 +4466,13 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             return apply_manual_trim
         
     
-    # Download full project audio
-    audio_player_components_for_download = [ci['audio'] for ci in chunk_interfaces[:MAX_CHUNKS_FOR_AUTO_SAVE]] # Define MAX_CHUNKS_FOR_AUTO_SAVE, e.g., 10 or 20
+    # Download full project audio - Simplified to one button that does everything
+    audio_player_components_for_download = [ci['audio'] for ci in chunk_interfaces[:MAX_CHUNKS_FOR_AUTO_SAVE]]
 
     download_project_btn.click(
-        fn=save_all_pending_trims_and_combine,
-        inputs=[current_project_name, current_project_chunks] + audio_player_components_for_download,
-        outputs=[download_file, download_status]
-    ).then(
-        fn=lambda file_path: gr.File(visible=bool(file_path)),
-        inputs=download_file,
-        outputs=download_file
-    )
-    
-    # Refresh download (regenerate combined file) - This one should NOT auto-save trims
-    refresh_download_btn.click(
-        fn=combine_project_audio_chunks, # Original function without auto-save
-        inputs=current_project_name,
-        outputs=[download_file, download_status]
-    ).then(
-        fn=lambda file_path: gr.File(visible=bool(file_path)),
-        inputs=download_file,
-        outputs=download_file
-    )
-    
-    # Clean up temp files
-    cleanup_temp_btn.click(
-        fn=cleanup_project_temp_files,
-        inputs=current_project_name,
-        outputs=download_status
+        fn=combine_project_audio_chunks_split,  # Use new split function for better file management
+        inputs=[current_project_name],
+        outputs=[download_status]
     )
     
     # Previous Projects - Single Voice Tab
@@ -4141,6 +4568,13 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=resume_single_voice_project,
         inputs=[model_state, single_project_dropdown, voice_library_path_state],
         outputs=[audiobook_output, single_project_progress]
+    )
+
+    # Download project button
+    download_project_btn.click(
+        fn=combine_project_audio_chunks_split,  # Use the new split function  
+        inputs=[current_project_name],
+        outputs=[download_status]
     )
 
 if __name__ == "__main__":
