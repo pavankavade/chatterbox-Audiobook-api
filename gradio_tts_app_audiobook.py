@@ -10,6 +10,7 @@ import wave
 from pathlib import Path
 from chatterbox.tts import ChatterboxTTS
 import time
+from typing import List
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Force CPU mode for multi-voice to avoid CUDA indexing errors
@@ -412,98 +413,147 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
     
     raise RuntimeError("Generation failed after all retries")
 
-def create_audiobook(model, text_content, voice_library_path, selected_voice, project_name):
-    """Create audiobook from text using selected voice with smart chunking and improved error handling"""
+def create_audiobook(
+    model,
+    text_content: str,
+    voice_library_path: str,
+    selected_voice: str,
+    project_name: str,
+    resume: bool = False,
+    autosave_interval: int = 10
+) -> tuple:
+    """
+    Create audiobook from text using selected voice with smart chunking, autosave every N chunks, and resume support.
+    Args:
+        model: TTS model
+        text_content: Full text
+        voice_library_path: Path to voice library
+        selected_voice: Voice name
+        project_name: Project name
+        resume: If True, resume from last saved chunk
+        autosave_interval: Chunks per autosave (default 10)
+    Returns:
+        (sample_rate, combined_audio), status_message
+    """
+    import numpy as np
+    import os
+    import json
+    import wave
+    from typing import List
+
     if not text_content or not selected_voice or not project_name:
         return None, "❌ Missing required fields"
-    
+
     # Get voice configuration
     voice_config = get_voice_config(voice_library_path, selected_voice)
     if not voice_config:
         return None, f"❌ Could not load voice configuration for '{selected_voice}'"
-    
     if not voice_config['audio_file']:
         return None, f"❌ No audio file found for voice '{voice_config['display_name']}'"
-    
-    try:
-        # Chunk the text intelligently
-        chunks = chunk_text_by_sentences(text_content)
-        total_chunks = len(chunks)
-        
-        if total_chunks == 0:
-            return None, "❌ No text chunks to process"
-        
-        # Initialize model if needed
-        if model is None:
-            model = ChatterboxTTS.from_pretrained(DEVICE)
-        
-        audio_chunks = []
-        status_updates = []
-        
-        # Clear memory before starting
-        clear_gpu_memory()
-        
-        for i, chunk in enumerate(chunks, 1):
-            try:
-                # Update status
-                chunk_words = len(chunk.split())
-                status_msg = f"🎵 Processing chunk {i}/{total_chunks}\n🎭 Voice: {voice_config['display_name']}\n📝 Chunk {i}: {chunk_words} words\n📊 Progress: {i}/{total_chunks} chunks"
-                status_updates.append(status_msg)
-                
-                # Generate audio for this chunk with retry logic
-                wav = generate_with_retry(
-                    model,
-                    chunk,
-                    voice_config['audio_file'],
-                    voice_config['exaggeration'],
-                    voice_config['temperature'],
-                    voice_config['cfg_weight']
-                )
-                
-                # Move to CPU immediately and clear GPU memory
-                audio_chunks.append(wav.squeeze(0).cpu().numpy())
-                del wav
-                clear_gpu_memory()
-                
-            except Exception as chunk_error:
-                return None, f"❌ Error processing chunk {i}: {str(chunk_error)}"
-        
-        # Save all chunks as numbered files
-        saved_files, project_dir = save_audio_chunks(audio_chunks, model.sr, project_name)
-        
-        # Save project metadata for regeneration purposes
-        voice_info = {
-            'voice_name': selected_voice,
-            'display_name': voice_config['display_name'],
-            'audio_file': voice_config['audio_file'],
-            'exaggeration': voice_config['exaggeration'],
-            'cfg_weight': voice_config['cfg_weight'],
-            'temperature': voice_config['temperature']
-        }
-        
-        save_project_metadata(
-            project_dir=project_dir,
-            project_name=project_name,
-            text_content=text_content,
-            voice_info=voice_info,
-            chunks=chunks,
-            project_type="single_voice"
-        )
-        
-        # Combine all audio for preview (just concatenate)
-        combined_audio = np.concatenate(audio_chunks)
-        
-        total_words = len(text_content.split())
-        duration_minutes = len(combined_audio) // model.sr // 60
-        
-        success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(saved_files)} audio chunks\n💾 Metadata saved for regeneration"
-        
-        return (model.sr, combined_audio), success_msg
-        
-    except Exception as e:
-        clear_gpu_memory()
-        error_msg = f"❌ Error creating audiobook: {str(e)}"
-        return None, error_msg
+
+    # Prepare chunking
+    chunks = chunk_text_by_sentences(text_content)
+    total_chunks = len(chunks)
+    if total_chunks == 0:
+        return None, "❌ No text chunks to process"
+
+    # Project directory
+    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
+    project_dir = os.path.join("audiobook_projects", safe_project_name)
+    os.makedirs(project_dir, exist_ok=True)
+
+    # Resume logic: find already completed chunk files
+    completed_chunks = set()
+    chunk_filenames = [f"{safe_project_name}_{i+1:03d}.wav" for i in range(total_chunks)]
+    for idx, fname in enumerate(chunk_filenames):
+        if os.path.exists(os.path.join(project_dir, fname)):
+            completed_chunks.add(idx)
+
+    # If resuming, only process missing chunks
+    start_idx = 0
+    if resume and completed_chunks:
+        # Find first missing chunk
+        for i in range(total_chunks):
+            if i not in completed_chunks:
+                start_idx = i
+                break
+        else:
+            return None, "✅ All chunks already completed. Nothing to resume."
+    else:
+        start_idx = 0
+
+    # Initialize model if needed
+    if model is None:
+        model = ChatterboxTTS.from_pretrained(DEVICE)
+
+    audio_chunks: List[np.ndarray] = []
+    status_updates = []
+    clear_gpu_memory()
+
+    # For resume, load already completed audio
+    for i in range(start_idx):
+        fname = os.path.join(project_dir, chunk_filenames[i])
+        with wave.open(fname, 'rb') as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+            audio_chunks.append(audio_data)
+
+    # Process missing chunks
+    for i in range(start_idx, total_chunks):
+        if i in completed_chunks:
+            continue  # Already done
+        chunk = chunks[i]
+        try:
+            chunk_words = len(chunk.split())
+            status_msg = f"🎵 Processing chunk {i+1}/{total_chunks}\n🎭 Voice: {voice_config['display_name']}\n📝 Chunk {i+1}: {chunk_words} words\n📊 Progress: {i+1}/{total_chunks} chunks"
+            status_updates.append(status_msg)
+            wav = generate_with_retry(
+                model,
+                chunk,
+                voice_config['audio_file'],
+                voice_config['exaggeration'],
+                voice_config['temperature'],
+                voice_config['cfg_weight']
+            )
+            audio_np = wav.squeeze(0).cpu().numpy()
+            audio_chunks.append(audio_np)
+            # Save this chunk immediately
+            fname = os.path.join(project_dir, chunk_filenames[i])
+            with wave.open(fname, 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(model.sr)
+                audio_int16 = (audio_np * 32767).astype(np.int16)
+                wav_file.writeframes(audio_int16.tobytes())
+            del wav
+            clear_gpu_memory()
+        except Exception as chunk_error:
+            return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
+        # Autosave every N chunks
+        if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
+            # Save project metadata
+            voice_info = {
+                'voice_name': selected_voice,
+                'display_name': voice_config['display_name'],
+                'audio_file': voice_config['audio_file'],
+                'exaggeration': voice_config['exaggeration'],
+                'cfg_weight': voice_config['cfg_weight'],
+                'temperature': voice_config['temperature']
+            }
+            save_project_metadata(
+                project_dir=project_dir,
+                project_name=project_name,
+                text_content=text_content,
+                voice_info=voice_info,
+                chunks=chunks,
+                project_type="single_voice"
+            )
+    # Combine all audio for preview (just concatenate)
+    combined_audio = np.concatenate(audio_chunks)
+    total_words = len(text_content.split())
+    duration_minutes = len(combined_audio) // model.sr // 60
+    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
+    return (model.sr, combined_audio), success_msg
 
 def load_voice_for_tts(voice_library_path, voice_name):
     """Load a voice profile for TTS tab - returns settings for sliders"""
@@ -1152,303 +1202,163 @@ def _filter_problematic_short_chunks(chunks, voice_assignments):
     
     return filtered_chunks
 
-def create_multi_voice_audiobook_with_assignments(model, text_content, voice_library_path, project_name, voice_assignments):
-    """Create multi-voice audiobook using the voice assignments mapping - Smart GPU/CPU hybrid"""
-    print(f"\n[DEBUG] === create_multi_voice_audiobook_with_assignments CALLED ===")
-    print(f"[DEBUG] Received project_name: {project_name}")
-    print(f"[DEBUG] Received voice_assignments: {voice_assignments}")
-    print(f"[DEBUG] Initial raw text_content (first 500 chars):\n{text_content[:500]}\n---------------------")
+def create_multi_voice_audiobook_with_assignments(
+    model,
+    text_content: str,
+    voice_library_path: str,
+    project_name: str,
+    voice_assignments: dict,
+    resume: bool = False,
+    autosave_interval: int = 10
+) -> tuple:
+    """
+    Create multi-voice audiobook using the voice assignments mapping, autosave every N chunks, and resume support.
+    Args:
+        model: TTS model
+        text_content: Full text
+        voice_library_path: Path to voice library
+        project_name: Project name
+        voice_assignments: Character to voice mapping
+        resume: If True, resume from last saved chunk
+        autosave_interval: Chunks per autosave (default 10)
+    Returns:
+        (sample_rate, combined_audio), status_message
+    """
+    import numpy as np
+    import os
+    import json
+    import wave
+    from typing import List
 
     if not text_content or not project_name or not voice_assignments:
         error_msg = "❌ Missing required fields or voice assignments. Ensure text is entered, project name is set, and voices are assigned after analyzing text."
-        print(f"[DEBUG] Validation failed: {error_msg}")
-        return None, None, error_msg, None # Ensure four values are returned
+        return None, None, error_msg, None
 
-    try:
-        # Parse the text and map voices
-        segments = parse_multi_voice_text(text_content)
-        mapped_segments = []
-        for character_name, text_segment in segments:
-            if character_name in voice_assignments:
-                actual_voice = voice_assignments[character_name]
-                mapped_segments.append((actual_voice, text_segment))
-            else:
-                return None, f"❌ No voice assignment found for character '{character_name}'"
-        
-        initial_max_words = 30 if DEVICE == "cuda" else 40 # Smaller initial chunks for GPU
-        print(f"ℹ️ Using initial max_words for chunking: {initial_max_words}")
-        chunks = chunk_multi_voice_segments(mapped_segments, max_words=initial_max_words)
-        
-        # Filter out problematic short chunks AFTER initial chunking
-        chunks = _filter_problematic_short_chunks(chunks, voice_assignments)
-        
-        total_chunks = len(chunks)
-        print(f"[DEBUG] After filtering, generated {total_chunks} chunks. First 3 chunks (if any):")
-        for i, (voice_name, chunk_text_debug) in enumerate(chunks[:3]):
-            print(f"  [DEBUG] Chunk {i+1} (voice: {voice_name}): '{chunk_text_debug[:100]}...' ")
-        print(f"---------------------")
+    # Parse the text and map voices
+    segments = parse_multi_voice_text(text_content)
+    mapped_segments = []
+    for character_name, text_segment in segments:
+        if character_name in voice_assignments:
+            actual_voice = voice_assignments[character_name]
+            mapped_segments.append((actual_voice, text_segment))
+        else:
+            return None, None, f"❌ No voice assignment found for character '{character_name}'", None
 
-        if not chunks:
-            return None, "❌ No text chunks to process"
-        
-        use_cpu = False
-        processing_model = model 
-        device_name = "GPU" if DEVICE == "cuda" else "CPU"
-        
-        # Ensure initial model is correct type
-        current_model_device_str = get_model_device_str(processing_model)
-        if DEVICE == "cuda" and current_model_device_str != 'cuda':
-            print(f"Correcting initial model to GPU (was {current_model_device_str}).")
-            if processing_model and hasattr(processing_model, 'to'): del processing_model
-            torch.cuda.empty_cache()
-            processing_model = ChatterboxTTS.from_pretrained(DEVICE)
-        elif DEVICE == "cpu" and current_model_device_str != 'cpu':
-            print(f"Correcting initial model to CPU (was {current_model_device_str}).")
-            if processing_model and hasattr(processing_model, 'to'): del processing_model
-            torch.cuda.empty_cache()
-            processing_model = ChatterboxTTS.from_pretrained("cpu")
+    initial_max_words = 30 if DEVICE == "cuda" else 40
+    chunks = chunk_multi_voice_segments(mapped_segments, max_words=initial_max_words)
+    chunks = _filter_problematic_short_chunks(chunks, voice_assignments)
+    total_chunks = len(chunks)
+    if not chunks:
+        return None, None, "❌ No text chunks to process", None
 
-        audio_chunks = []
-        chunk_info = []
-        global_cuda_errors_count = 0
-        max_global_cuda_errors = 2
+    # Project directory
+    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
+    project_dir = os.path.join("audiobook_projects", safe_project_name)
+    os.makedirs(project_dir, exist_ok=True)
 
-        for i, (voice_name, chunk_text) in enumerate(chunks, 1):
-            try:
-                voice_config = get_voice_config(voice_library_path, voice_name)
-                if not voice_config: return None, f"❌ Could not load voice config for '{voice_name}'"
-                if not voice_config['audio_file']: return None, f"❌ No audio file for voice '{voice_config['display_name']}'"
-                if not os.path.exists(voice_config['audio_file']): return None, f"❌ Audio file not found: {voice_config['audio_file']}"
+    # Resume logic: find already completed chunk files
+    completed_chunks = set()
+    chunk_filenames = []
+    chunk_info = []
+    for i, (voice_name, chunk_text) in enumerate(chunks):
+        character_name = None
+        for char_key, assigned_voice_val in voice_assignments.items():
+            if assigned_voice_val == voice_name:
+                character_name = char_key
+                break
+        character_name_file = character_name.replace(' ', '_') if character_name else voice_name
+        filename = f"{safe_project_name}_{i+1:03d}_{character_name_file}.wav"
+        chunk_filenames.append(filename)
+        if os.path.exists(os.path.join(project_dir, filename)):
+            completed_chunks.add(i)
+        chunk_info.append({
+            'chunk_num': i+1, 'voice_name': voice_name, 'character_name': character_name or voice_name,
+            'voice_display': voice_name, 'text': chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
+            'word_count': len(chunk_text.split())
+        })
 
-                if "_-_" in voice_name or len(voice_name) > 50:
-                    print(f"⚠️ Warning: Voice name '{voice_name}' may cause issues")
-                
-                # device_name here reflects the *intended* device for the outer loop (GPU if available, else CPU)
-                # or the globally switched CPU mode.
-                # current_attempt_device will be set more specifically within the attempt loop.
+    # If resuming, only process missing chunks
+    start_idx = 0
+    if resume and completed_chunks:
+        for i in range(total_chunks):
+            if i not in completed_chunks:
+                start_idx = i
+                break
+        else:
+            return None, None, "✅ All chunks already completed. Nothing to resume.", None
+    else:
+        start_idx = 0
 
-                generation_success = False
-                wav = None
+    # Initialize model if needed
+    processing_model = model
+    if processing_model is None:
+        processing_model = ChatterboxTTS.from_pretrained(DEVICE)
 
-                for attempt in range(2): 
-                    current_attempt_device = "" # To be set based on logic below
+    audio_chunks: List[np.ndarray] = []
+    # For resume, load already completed audio
+    for i in range(start_idx):
+        fname = os.path.join(project_dir, chunk_filenames[i])
+        with wave.open(fname, 'rb') as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+            audio_chunks.append(audio_data)
 
-                    try:
-                        model_actual_device_str = get_model_device_str(processing_model)
-
-                        if use_cpu: # Global flag for CPU for the rest of the audiobook
-                            if model_actual_device_str != 'cpu':
-                                print(f"🔄 Chunk {i}: Global CPU mode. Ensuring CPU model (was {model_actual_device_str}).")
-                                if processing_model and hasattr(processing_model, 'to'): del processing_model
-                                torch.cuda.empty_cache()
-                                processing_model = ChatterboxTTS.from_pretrained("cpu")
-                            device_name = "CPU" # Update primary intended device
-                            current_attempt_device = "CPU"
-                        elif device_name == "GPU": # Intending GPU for this chunk (not globally on CPU yet)
-                            if model_actual_device_str != 'cuda': # Model is not on GPU (or is None)
-                                print(f"🔄 Chunk {i}, Attempt {attempt+1}: Reloading GPU model (was {model_actual_device_str}).")
-                                if processing_model and hasattr(processing_model, 'to'): del processing_model
-                                torch.cuda.empty_cache()
-                                processing_model = ChatterboxTTS.from_pretrained(DEVICE) # DEVICE is "cuda"
-                            current_attempt_device = "GPU"
-                        else: # device_name is "CPU" from initial setup
-                             if model_actual_device_str != 'cpu':
-                                print(f"🔄 Chunk {i}, Attempt {attempt+1}: Ensuring CPU model (was {model_actual_device_str}).")
-                                if processing_model and hasattr(processing_model, 'to'): del processing_model
-                                torch.cuda.empty_cache()
-                                processing_model = ChatterboxTTS.from_pretrained("cpu")
-                             current_attempt_device = "CPU"
-                        
-                        print(f"🎙️ Chunk {i}, Attempt {attempt+1} on {current_attempt_device} for voice '{voice_name}'")
-                        if current_attempt_device == "GPU":
-                            torch.cuda.empty_cache()
-
-                        wav = processing_model.generate(
-                            chunk_text, audio_prompt_path=voice_config['audio_file'],
-                            exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
-                            cfg_weight=voice_config['cfg_weight'])
-                        generation_success = True
-                        print(f"✅ Chunk {i}, Attempt {attempt+1} SUCCEEDED on {current_attempt_device}")
-                        break 
-                        
-                    except RuntimeError as gen_error:
-                        error_str = str(gen_error).lower()
-                        print(f"⚠️ Chunk {i}, Attempt {attempt+1} FAILED on {current_attempt_device}: {error_str[:250]}...") # Increased log length
-                        if attempt == 0 and current_attempt_device == "GPU": # Log text on first GPU fail
-                            print(f"Problematic text for chunk {i} (GPU Attempt 1 with {voice_name}): <<< {chunk_text[:300]}... >>>")
-                        
-                        torch.cuda.empty_cache()
-
-                        is_cuda_related_error = "cuda" in error_str or "device-side assert" in error_str or "srcindex < srcselectdimsize" in error_str
-                        
-                        if is_cuda_related_error and current_attempt_device == "GPU":
-                            global_cuda_errors_count += 1
-                            if global_cuda_errors_count >= max_global_cuda_errors and not use_cpu:
-                                print(f"🚫 Max global GPU errors ({global_cuda_errors_count}). Switching to CPU for subsequent chunks.")
-                                use_cpu = True 
-                                device_name = "CPU" # Reflect global switch for future chunks' device_name logic
-
-                            if attempt == 0: 
-                                print(f"🛠️ Chunk {i}: GPU Attempt 1 failed. Explicitly deleting and preparing to reload GPU model for Attempt 2.")
-                                if processing_model and hasattr(processing_model, 'to'):
-                                    try:
-                                        # Attempt to move to CPU before deleting if it's a nn.Module
-                                        if isinstance(processing_model, torch.nn.Module):
-                                            processing_model.to('cpu')
-                                    except Exception as move_err:
-                                        print(f"  (Note: Error moving model to CPU before del: {move_err})")
-                                    del processing_model
-                                processing_model = None # Mark for reload
-                                torch.cuda.synchronize() # Ensure all GPU operations are done
-                                torch.cuda.empty_cache() # Clear cache thoroughly
-                                continue 
-                        
-                        if attempt == 1:
-                            print(f"❌ Chunk {i} failed after 2 attempts on intended device ({current_attempt_device}).")
-                            break 
-                
-                if not generation_success:
-                    print(f"📉 Chunk {i} failed initial attempts. Trying final CPU fallback.")
-                    current_model_device_str = get_model_device_str(processing_model)
-                    if current_model_device_str != 'cpu':
-                        print(f"🔄 Chunk {i}: Switching to CPU for final attempt (was {current_model_device_str}). Syncing CUDA first...")
-                        if torch.cuda.is_available(): # Synchronize before switching if CUDA was involved
-                            torch.cuda.synchronize()
-                        if processing_model and hasattr(processing_model, 'to'): del processing_model
-                        torch.cuda.empty_cache() # Clear cache again after sync
-                        processing_model = ChatterboxTTS.from_pretrained("cpu")
-                    
-                    try:
-                        print(f"🎙️ Chunk {i}, Final attempt on CPU for voice '{voice_name}'")
-                        wav = processing_model.generate(
-                            chunk_text, audio_prompt_path=voice_config['audio_file'],
-                            exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
-                            cfg_weight=voice_config['cfg_weight'])
-                        generation_success = True
-                        print(f"✅ Chunk {i} SUCCEEDED on final CPU attempt.")
-                        device_name = "CPU" # Model is now CPU
-                    except Exception as cpu_final_error:
-                        print(f"❌❌ Chunk {i} FAILED ALL ATTEMPTS, including final CPU. Voice: '{voice_name}'. Error: {str(cpu_final_error)}")
-                        print(f"Problematic text for chunk {i}: <<< {chunk_text[:200]}... >>>")
-                        return None, f"❌ Chunk {i} FAILED ALL ATTEMPTS (voice: {voice_name}), including final CPU: {str(cpu_final_error)}"
-
-                if not generation_success:
-                    return None, f"❌ Critical error: Chunk {i} status unclear post-attempts."
-
-                # Store audio
-                # Note: device_name reflects the device of the successfully used model for this chunk if successful
-                # or the model state after potential switches.
-                # If generation_success is true, wav is from processing_model.
-                # If it used GPU and succeeded, wav is on GPU.
-                # If it used CPU and succeeded, wav is on CPU.
-                
-                model_used_for_wav = get_model_device_str(processing_model)
-                if model_used_for_wav == 'cuda' and not use_cpu : # if not globally on CPU
-                     audio_chunks.append(wav.squeeze(0).cpu().numpy())
-                else: # wav is already on CPU or should be treated as such
-                     audio_chunks.append(wav.squeeze(0).numpy())
-
-                character_for_voice = None
-                for char_key, assigned_voice_val in voice_assignments.items(): # Renamed for clarity
-                    if assigned_voice_val == voice_name:
-                        character_for_voice = char_key
-                        break
-                chunk_info.append({
-                    'chunk_num': i, 'voice_name': voice_name, 'character_name': character_for_voice or voice_name,
-                    'voice_display': voice_config['display_name'], 
-                    'text': chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
-                    'word_count': len(chunk_text.split())
-                })
-                
-                del wav
-                if get_model_device_str(processing_model) == 'cuda' and not use_cpu:
-                    torch.cuda.empty_cache()
-                
-            except Exception as chunk_error_outer:
-                return None, f"❌ Outer error processing chunk {i} (voice: {voice_name}): {str(chunk_error_outer)}"
-        
-        # Save all chunks with character and voice info
-        saved_files = []
-        safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
-        project_dir = os.path.join("audiobook_projects", safe_project_name)
-        os.makedirs(project_dir, exist_ok=True)
-
-        for idx, (audio_chunk_data, info_data) in enumerate(zip(audio_chunks, chunk_info), 1):
-            character_name_file = info_data['character_name'].replace(' ', '_') if info_data['character_name'] else info_data['voice_name']
-            filename = f"{safe_project_name}_{idx:03d}_{character_name_file}.wav"
-            filepath = os.path.join(project_dir, filename)
-            with wave.open(filepath, 'wb') as wav_file:
+    # Process missing chunks
+    for i in range(start_idx, total_chunks):
+        if i in completed_chunks:
+            continue
+        voice_name, chunk_text = chunks[i]
+        try:
+            voice_config = get_voice_config(voice_library_path, voice_name)
+            if not voice_config:
+                return None, None, f"❌ Could not load voice config for '{voice_name}'", None
+            if not voice_config['audio_file']:
+                return None, None, f"❌ No audio file for voice '{voice_config['display_name']}'", None
+            if not os.path.exists(voice_config['audio_file']):
+                return None, None, f"❌ Audio file not found: {voice_config['audio_file']}", None
+            wav = processing_model.generate(
+                chunk_text, audio_prompt_path=voice_config['audio_file'],
+                exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
+                cfg_weight=voice_config['cfg_weight'])
+            audio_np = wav.squeeze(0).cpu().numpy()
+            audio_chunks.append(audio_np)
+            # Save this chunk immediately
+            fname = os.path.join(project_dir, chunk_filenames[i])
+            with wave.open(fname, 'wb') as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(processing_model.sr)
-                audio_int16 = (audio_chunk_data * 32767).astype(np.int16)
+                audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
-            saved_files.append(filepath)
-
-        metadata_file = os.path.join(project_dir, "project_info.json")
-        with open(metadata_file, 'w') as f:
-            json.dump({
-                'project_name': project_name, 'total_chunks': total_chunks,
-                'final_processing_mode': 'CPU' if use_cpu else ('GPU' if DEVICE == 'cuda' else 'CPU'), # More accurate final mode
-                'voice_assignments': voice_assignments, 'characters': list(voice_assignments.keys()),
-                'chunks': chunk_info
-            }, f, indent=2)
-        
-        # Save standardized project metadata for regeneration compatibility
-        multi_voice_info = {}
-        for voice_name in set(voice_assignments.values()):
-            voice_config = get_voice_config(voice_library_path, voice_name)
-            if voice_config:
-                multi_voice_info[voice_name] = {
-                    'voice_name': voice_name,
-                    'display_name': voice_config['display_name'],
-                    'audio_file': voice_config['audio_file'],
-                    'exaggeration': voice_config['exaggeration'],
-                    'cfg_weight': voice_config['cfg_weight'],
-                    'temperature': voice_config['temperature']
-                }
-        
-        # Convert chunks back to text list for metadata
-        chunks_text = [chunk_text for _, chunk_text in chunks]
-        
-        save_project_metadata(
-            project_dir=project_dir,
-            project_name=project_name,
-            text_content=text_content,
-            voice_info=multi_voice_info,
-            chunks=chunks_text,
-            project_type="multi_voice"
-        )
-        
-        combined_audio = np.concatenate(audio_chunks)
-        total_words = sum([cinfo['word_count'] for cinfo in chunk_info])
-        duration_minutes = len(combined_audio) // processing_model.sr // 60
-        
-        overall_mode_msg = 'CPU' if use_cpu else ('GPU' if DEVICE == 'cuda' else 'CPU')
-        fallback_info = ""
-        if global_cuda_errors_count > 0:
-            fallback_info = f" with {global_cuda_errors_count} GPU error(s) leading to CPU use for some/all chunks" \
-                           if use_cpu else f" with {global_cuda_errors_count} GPU error(s) handled (some chunks may have used CPU)"
-
-        success_msg = (f"✅ Multi-voice audiobook created successfully! (Overall mode: {overall_mode_msg}{fallback_info})\n"
-                       f"📊 {total_words:,} words in {total_chunks} chunks\n"
-                       f"🎭 Characters: {len(voice_assignments)}\n"
-                       f"⏱️ Duration: ~{duration_minutes} minutes\n"
-                       f"📁 Saved to: {project_dir}\n"
-                       f"🎵 Files: {len(saved_files)} audio chunks")
-        
-        assignment_summary = "\n".join([f"🎭 [{char}] → {assigned_voice}" for char, assigned_voice in voice_assignments.items()])
-        success_msg += f"\n\nVoice Assignments:\n{assignment_summary}"
-        
-        return (processing_model.sr, combined_audio), success_msg
-        
-    except Exception as e:
-        # Log the full traceback for debugging next time
-        import traceback
-        print(f"❌ CRITICAL ERROR in create_multi_voice_audiobook_with_assignments: {str(e)}")
-        traceback.print_exc()
-        error_msg = f"❌ Error creating multi-voice audiobook: {str(e)}"
-        return None, error_msg
+            del wav
+            if get_model_device_str(processing_model) == 'cuda':
+                torch.cuda.empty_cache()
+        except Exception as chunk_error_outer:
+            return None, None, f"❌ Outer error processing chunk {i+1} (voice: {voice_name}): {str(chunk_error_outer)}", None
+        # Autosave every N chunks
+        if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
+            # Save project metadata
+            metadata_file = os.path.join(project_dir, "project_info.json")
+            with open(metadata_file, 'w') as f:
+                json.dump({
+                    'project_name': project_name, 'total_chunks': total_chunks,
+                    'final_processing_mode': 'CPU' if DEVICE == 'cpu' else 'GPU',
+                    'voice_assignments': voice_assignments, 'characters': list(voice_assignments.keys()),
+                    'chunks': chunk_info
+                }, f, indent=2)
+    # Combine all audio for preview (just concatenate)
+    combined_audio = np.concatenate(audio_chunks)
+    total_words = sum(len(chunk[1].split()) for chunk in chunks)
+    duration_minutes = len(combined_audio) // processing_model.sr // 60
+    assignment_summary = "\n".join([f"🎭 [{char}] → {assigned_voice}" for char, assigned_voice in voice_assignments.items()])
+    success_msg = (f"✅ Multi-voice audiobook created successfully!\n"
+                   f"📊 {total_words:,} words in {total_chunks} chunks\n"
+                   f"🎭 Characters: {len(voice_assignments)}\n"
+                   f"⏱️ Duration: ~{duration_minutes} minutes\n"
+                   f"📁 Saved to: {project_dir}\n"
+                   f"🎵 Files: {len(audio_chunks)} audio chunks\n"
+                   f"\nVoice Assignments:\n{assignment_summary}")
+    return (processing_model.sr, combined_audio), None, success_msg, None
 
 def handle_multi_voice_analysis(text_content, voice_library_path):
     """
@@ -2754,69 +2664,54 @@ def extract_audio_segment(audio_data, start_time: float = None, end_time: float 
         return None, f"❌ Error extracting segment: {str(e)}"
 
 def save_visual_trim_to_file(audio_data, original_file_path: str, chunk_num: int) -> tuple:
-    """Save visually trimmed audio from Gradio audio component to file
-    
-    This attempts to work with whatever audio data Gradio provides from the visual trimming.
-    If it's the full audio, it saves the full audio. If it's trimmed, it saves the trimmed portion.
-    """
+    """Save visually trimmed audio from Gradio audio component to file, directly overwriting the original chunk file."""
+    import wave
+    import numpy as np
+    import os
+
     if not audio_data or not original_file_path:
         return "❌ No audio data to save", None
-    
-    print(f"[DEBUG] save_visual_trim_to_file called for chunk {chunk_num}")
-    print(f"[DEBUG] audio_data type: {type(audio_data)}")
-    
+
+    print(f"[DEBUG] Direct save_visual_trim_to_file called for chunk {chunk_num}")
+    print(f"[DEBUG] Audio data type: {type(audio_data)}")
+    print(f"[DEBUG] Original file path: {original_file_path}")
+
     try:
-        # Get project directory and create backup
-        project_dir = os.path.dirname(original_file_path)
-        backup_file = original_file_path.replace('.wav', f'_backup_visual_trim_{int(time.time())}.wav')
-        
-        # Backup original file
-        if os.path.exists(original_file_path):
-            shutil.copy2(original_file_path, backup_file)
-            print(f"[DEBUG] Created backup: {os.path.basename(backup_file)}")
-        
-        # Handle Gradio audio data - it should be in (sample_rate, audio_array) format
+        if not os.path.exists(os.path.dirname(original_file_path)):
+            return f"❌ Error: Directory for original file does not exist: {os.path.dirname(original_file_path)}", None
+
         if isinstance(audio_data, tuple) and len(audio_data) == 2:
             sample_rate, audio_array = audio_data
-            print(f"[DEBUG] Audio format - sample_rate: {sample_rate}, array shape: {getattr(audio_array, 'shape', 'unknown')}")
-            
-            # Ensure audio_array is numpy array
             if not isinstance(audio_array, np.ndarray):
                 audio_array = np.array(audio_array)
-            
-            # Handle multi-dimensional arrays
             if len(audio_array.shape) > 1:
-                # If stereo, take first channel
                 audio_array = audio_array[:, 0] if audio_array.shape[1] > 0 else audio_array.flatten()
-            
-            # Save the audio as WAV file (whatever Gradio gave us - trimmed or full)
+
+            print(f"[DEBUG] Saving chunk {chunk_num} - Sample rate: {sample_rate}, Trimmed array length: {len(audio_array)}")
+
             with wave.open(original_file_path, 'wb') as wav_file:
-                wav_file.setnchannels(1)  # Mono
-                wav_file.setsampwidth(2)  # 16-bit
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
                 wav_file.setframerate(sample_rate)
-                
-                # Convert to int16 if needed
                 if audio_array.dtype != np.int16:
                     if audio_array.dtype == np.float32 or audio_array.dtype == np.float64:
-                        # Ensure values are in range [-1, 1] before converting
                         audio_array = np.clip(audio_array, -1.0, 1.0)
                         audio_int16 = (audio_array * 32767).astype(np.int16)
                     else:
                         audio_int16 = audio_array.astype(np.int16)
                 else:
                     audio_int16 = audio_array
-                
                 wav_file.writeframes(audio_int16.tobytes())
             
             duration_seconds = len(audio_int16) / sample_rate
-            status_msg = f"✅ Chunk {chunk_num} audio saved! Duration: {duration_seconds:.2f}s\n💾 Original backed up as: {os.path.basename(backup_file)}\n🎵 Visual trimming applied (if any)"
-            print(f"[DEBUG] Successfully saved audio for chunk {chunk_num}: {len(audio_int16)} samples")
+            status_msg = f"✅ Chunk {chunk_num} trimmed & directly saved! New duration: {duration_seconds:.2f}s. Original overwritten."
+            print(f"[INFO] Chunk {chunk_num} saved to {original_file_path}, duration {duration_seconds:.2f}s.")
             return status_msg, original_file_path
         else:
+            print(f"[ERROR] Invalid audio format for chunk {chunk_num}: expected (sample_rate, array) tuple, got {type(audio_data)}")
             return f"❌ Invalid audio format for chunk {chunk_num}: expected (sample_rate, array) tuple", None
-            
     except Exception as e:
-        print(f"[DEBUG] Exception in save_visual_trim_to_file: {str(e)}")
+        print(f"[ERROR] Exception in save_visual_trim_to_file for chunk {chunk_num}: {str(e)}")
         return f"❌ Error saving audio for chunk {chunk_num}: {str(e)}", None
 
 def auto_save_visual_trims_and_download(project_name: str) -> tuple:
@@ -3096,6 +2991,19 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 file_status = gr.HTML(
                                     "<div class='file-status'>📄 No file loaded</div>"
                                 )
+                    # NEW: Project Management Section
+                    with gr.Group():
+                        gr.HTML("<h3>📁 Project Management</h3>")
+                        single_project_dropdown = gr.Dropdown(
+                            choices=get_project_choices(),
+                            label="Select Existing Project",
+                            value=None,
+                            info="Load or resume an existing project"
+                        )
+                        with gr.Row():
+                            load_project_btn = gr.Button("📂 Load Project", size="sm", variant="secondary")
+                            resume_project_btn = gr.Button("▶️ Resume Project", size="sm", variant="primary")
+                        single_project_progress = gr.HTML("<div class='voice-status'>No project loaded</div>")
                 
                 with gr.Column(scale=1):
                     # Voice Selection & Project Settings
@@ -3254,6 +3162,19 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 multi_file_status = gr.HTML(
                                     "<div class='file-status'>📄 No file loaded</div>"
                                 )
+                    # NEW: Project Management Section
+                    with gr.Group():
+                        gr.HTML("<h3>📁 Project Management</h3>")
+                        multi_project_dropdown = gr.Dropdown(
+                            choices=get_project_choices(),
+                            label="Select Existing Project",
+                            value=None,
+                            info="Load or resume an existing project"
+                        )
+                        with gr.Row():
+                            load_multi_project_btn = gr.Button("📂 Load Project", size="sm", variant="secondary")
+                            resume_multi_project_btn = gr.Button("▶️ Resume Project", size="sm", variant="primary")
+                        multi_project_progress = gr.HTML("<div class='voice-status'>No project loaded</div>")
                 
                 with gr.Column(scale=1):
                     # Voice Analysis & Project Settings
@@ -3948,41 +3869,77 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         )
         
         # Save original trimmed audio handler
-        def make_save_original_trim_handler(chunk_num):
-            def save_original_trim(trimmed_audio_data):
-                print(f"[DEBUG] save_original_trim called for chunk {chunk_num}")
-                print(f"[DEBUG] trimmed_audio_data type: {type(trimmed_audio_data)}")
-                
-                if not current_project_chunks.value or chunk_num > len(current_project_chunks.value):
-                    return f"❌ No project loaded or invalid chunk number {chunk_num}", None
-                
-                chunk_info = current_project_chunks.value[chunk_num - 1]
+        def make_save_original_trim_handler(chunk_num_captured): # Renamed to avoid conflict, will be repurposed or removed
+            # This function's logic will be moved into make_audio_change_handler
+            def save_original_trim(trimmed_audio_data_from_event, current_project_chunks_state_value):
+                print(f"[DEBUG] save_original_trim (now part of audio_change) called for chunk {chunk_num_captured}")
+                print(f"[DEBUG] trimmed_audio_data_from_event type: {type(trimmed_audio_data_from_event)}")
+
+                if not trimmed_audio_data_from_event:
+                    return f"<div class='voice-status'>Chunk {chunk_num_captured} - No audio data to save.</div>", None 
+
+                if not current_project_chunks_state_value or chunk_num_captured > len(current_project_chunks_state_value):
+                    return f"❌ No project loaded or invalid chunk number {chunk_num_captured} for saving.", None
+
+                chunk_info = current_project_chunks_state_value[chunk_num_captured - 1]
                 original_file_path = chunk_info['audio_file']
                 
-                # Process the audio data with the new simplified function
-                return save_visual_trim_to_file(trimmed_audio_data, original_file_path, chunk_num)
+                status_msg, new_file_path_or_none = save_visual_trim_to_file(
+                    trimmed_audio_data_from_event, 
+                    original_file_path, 
+                    chunk_num_captured
+                )
+                
+                print(f"[DEBUG] save_original_trim for chunk {chunk_num_captured} - save status: {status_msg}, new_file_path: {new_file_path_or_none}")
+                return status_msg, new_file_path_or_none # This will update status and the audio player
             return save_original_trim
         
-        # Audio change handler to provide feedback about trimming
-        def make_audio_change_handler(chunk_num):
-            def audio_change_handler(audio_data):
-                if audio_data:
-                    return f"<div class='voice-status'>🎵 Chunk {chunk_num} audio ready - you can trim the waveform and save changes</div>"
-                else:
-                    return f"<div class='voice-status'>📄 Chunk {chunk_num} - no audio loaded</div>"
+        # Audio change handler to provide feedback about trimming AND SAVE
+        def make_audio_change_handler(chunk_num_captured):
+            def audio_change_handler(trimmed_audio_data_from_event, current_project_chunks_state_value):
+                # This is triggered when the Gradio audio component's value changes,
+                # which includes after its internal "Trim" button is pressed.
+                
+                print(f"[DEBUG] audio_change_handler (for saving) triggered for chunk {chunk_num_captured}")
+                print(f"[DEBUG] trimmed_audio_data_from_event type: {type(trimmed_audio_data_from_event)}")
+
+                if not trimmed_audio_data_from_event:
+                    # This can happen if the audio is cleared or fails to load
+                    return f"<div class='voice-status'>Chunk {chunk_num_captured} - Audio cleared or no data.</div>", None 
+
+                if not current_project_chunks_state_value or chunk_num_captured > len(current_project_chunks_state_value):
+                    # This ensures we have project context to find the original file path
+                    return f"❌ Cannot save: No project loaded or invalid chunk {chunk_num_captured}.", None
+
+                chunk_info = current_project_chunks_state_value[chunk_num_captured - 1]
+                original_file_path = chunk_info['audio_file']
+                
+                # Call the save function directly
+                status_msg, new_file_path_or_none = save_visual_trim_to_file(
+                    trimmed_audio_data_from_event, 
+                    original_file_path, 
+                    chunk_num_captured
+                )
+                
+                print(f"[DEBUG] audio_change_handler save for chunk {chunk_num_captured} - status: {status_msg}, new_file_path: {new_file_path_or_none}")
+                
+                # The gr.Audio component should be updated with new_file_path_or_none.
+                # If saving failed, new_file_path_or_none will be None, and the audio player will reflect this.
+                return status_msg, new_file_path_or_none 
             return audio_change_handler
         
         chunk_interface['audio'].change(
-            fn=make_audio_change_handler(chunk_num),
-            inputs=chunk_interface['audio'],
-            outputs=chunk_interface['status']
+            fn=make_audio_change_handler(chunk_num), # Use the new handler that saves
+            inputs=[chunk_interface['audio'], current_project_chunks], # Pass current_project_chunks
+            outputs=[chunk_interface['status'], chunk_interface['audio']] # Update status AND the audio component
         )
         
-        chunk_interface['save_original_trim_btn'].click(
-            fn=make_save_original_trim_handler(chunk_num),
-            inputs=chunk_interface['audio'],
-            outputs=[chunk_interface['status'], chunk_interface['audio']]
-        )
+        # REMOVE THIS CLICK HANDLER
+        # chunk_interface['save_original_trim_btn'].click(
+        #     fn=make_save_original_trim_handler(chunk_num),
+        #     inputs=chunk_interface['audio'],
+        #     outputs=[chunk_interface['status'], chunk_interface['audio']]
+        # )
         
         # Save regenerated trimmed audio handler
         def make_save_regen_trim_handler(chunk_num):
@@ -4139,6 +4096,51 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=force_refresh_single_project_dropdown,
         inputs=[],
         outputs=project_dropdown
+    )
+
+    # --- Add these handlers after the main UI definition, before __main__ ---
+
+    # Handler to load a single-voice project and populate fields
+
+    def load_single_voice_project(project_name: str):
+        """Load project info and update UI fields for single-voice tab."""
+        text, voice_info, proj_name, _, status = load_project_for_regeneration(project_name)
+        # Try to extract voice name from voice_info string
+        import re
+        voice_match = re.search(r'\(([^)]+)\)', voice_info)
+        selected_voice = None
+        if voice_match:
+            selected_voice = voice_match.group(1)
+        return text, selected_voice, proj_name, status
+
+    # Handler to resume single-voice project generation
+
+    def resume_single_voice_project(model, project_name, voice_library_path):
+        # Load metadata to get text and voice
+        projects = get_existing_projects()
+        project = next((p for p in projects if p['name'] == project_name), None)
+        if not project or not project.get('metadata'):
+            return None, f"❌ Project '{project_name}' not found or missing metadata."
+        metadata = project['metadata']
+        text_content = metadata.get('text_content', '')
+        voice_info = metadata.get('voice_info', {})
+        selected_voice = voice_info.get('voice_name')
+        if not text_content or not selected_voice:
+            return None, "❌ Project metadata incomplete."
+        return create_audiobook(model, text_content, voice_library_path, selected_voice, project_name, resume=True)
+
+    # --- Wire up the buttons in the UI logic ---
+
+    load_project_btn.click(
+        fn=load_single_voice_project,
+        inputs=single_project_dropdown,
+        outputs=[audiobook_text, audiobook_voice_selector, project_name, single_project_progress]
+    )
+
+    resume_project_btn.click(
+        fn=resume_single_voice_project,
+        inputs=[model_state, single_project_dropdown, voice_library_path_state],
+        outputs=[audiobook_output, single_project_progress]
     )
 
 if __name__ == "__main__":
