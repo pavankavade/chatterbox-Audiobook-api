@@ -1,9 +1,0 @@
-{
-  "display_name": "male",
-  "description": "work",
-  "audio_file": "reference.wav",
-  "exaggeration": 0.5,
-  "cfg_weight": 0.5,
-  "temperature": 0.8,
-  "created_date": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox"
-}

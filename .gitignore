@@ -46,3 +46,19 @@ checkpoints/
 
 # Ignore generated sample .wav files
 **/*.wav
+
+# User data directories - keep repository clean
+venv/
+audiobook_projects/
+speakers/
+source/
+audiobook_config.json
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

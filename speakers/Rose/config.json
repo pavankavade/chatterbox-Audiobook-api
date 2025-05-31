@@ -1,9 +1,0 @@
-{
-  "display_name": "Female",
-  "description": "American",
-  "audio_file": "reference.wav",
-  "exaggeration": 0.55,
-  "cfg_weight": 0.2,
-  "temperature": 0.7,
-  "created_date": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox"
-}
