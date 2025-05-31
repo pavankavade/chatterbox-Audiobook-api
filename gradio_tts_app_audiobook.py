@@ -12,6 +12,42 @@ from chatterbox.tts import ChatterboxTTS
 import time
 from typing import List
 
+# Import refactored config functions (PHASE 1 of gradual refactor)
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+from src.audiobook.config import load_config, save_config
+
+# Import refactored model functions (PHASE 2 of gradual refactor)  
+from src.audiobook.models import (
+    set_seed as models_set_seed, 
+    load_model as models_load_model, 
+    load_model_cpu as models_load_model_cpu, 
+    generate as models_generate, 
+    generate_with_cpu_fallback as models_generate_with_cpu_fallback,
+    force_cpu_processing as models_force_cpu_processing, 
+    clear_gpu_memory as models_clear_gpu_memory, 
+    check_gpu_memory as models_check_gpu_memory, 
+    generate_with_retry as models_generate_with_retry,
+    get_model_device_str as models_get_model_device_str
+)
+
+# PHASE 4 REFACTOR: Renamed text_processing.py to processing.py to include audio functions
+# Text and audio processing imports  
+from src.audiobook.processing import (
+    chunk_text_by_sentences as text_chunk_text_by_sentences,
+    adaptive_chunk_text as text_adaptive_chunk_text,
+    load_text_file as text_load_text_file,
+    validate_audiobook_input as text_validate_audiobook_input,
+    parse_multi_voice_text as text_parse_multi_voice_text,
+    clean_character_name_from_text as text_clean_character_name_from_text,
+    chunk_multi_voice_segments as text_chunk_multi_voice_segments,
+    validate_multi_voice_text as text_validate_multi_voice_text,
+    validate_multi_audiobook_input as text_validate_multi_audiobook_input,
+    analyze_multi_voice_text as text_analyze_multi_voice_text,
+    save_audio_chunks as audio_save_audio_chunks,
+    extract_audio_segment as audio_extract_audio_segment
+)
+
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Force CPU mode for multi-voice to avoid CUDA indexing errors
 MULTI_VOICE_DEVICE = "cpu"  # Force CPU for multi-voice processing
@@ -22,61 +58,37 @@ CONFIG_FILE = "audiobook_config.json"
 MAX_CHUNKS_FOR_INTERFACE = 100 # Increased from 50 to 100, will add pagination later
 MAX_CHUNKS_FOR_AUTO_SAVE = 100 # Match the interface limit for now
 
-def load_config():
-    """Load configuration including voice library path"""
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            return config.get('voice_library_path', DEFAULT_VOICE_LIBRARY)
-        except:
-            return DEFAULT_VOICE_LIBRARY
-    return DEFAULT_VOICE_LIBRARY
-
-def save_config(voice_library_path):
-    """Save configuration including voice library path"""
-    config = {
-        'voice_library_path': voice_library_path,
-        'last_updated': str(Path().resolve())  # timestamp
-    }
-    try:
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=2)
-        return f"✅ Configuration saved - Voice library path: {voice_library_path}"
-    except Exception as e:
-        return f"❌ Error saving configuration: {str(e)}"
-
 def set_seed(seed: int):
-    torch.manual_seed(seed)
+    models_set_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
 
 def load_model():
-    model = ChatterboxTTS.from_pretrained(DEVICE)
-    return model
+    return models_load_model()
 
 def load_model_cpu():
     """Load model specifically for CPU processing"""
-    model = ChatterboxTTS.from_pretrained("cpu")
-    return model
+    return models_load_model_cpu()
 
 def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw):
     if model is None:
-        model = ChatterboxTTS.from_pretrained(DEVICE)
+        model = models_load_model()
 
     if seed_num != 0:
         set_seed(int(seed_num))
 
-    wav = model.generate(
+    wav = models_generate(
+        model,
         text,
-        audio_prompt_path=audio_prompt_path,
-        exaggeration=exaggeration,
-        temperature=temperature,
-        cfg_weight=cfgw,
+        audio_prompt_path,
+        exaggeration,
+        temperature,
+        seed_num,
+        cfgw
     )
-    return (model.sr, wav.squeeze(0).numpy())
+    return wav
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight):
     """Generate audio with automatic CPU fallback for problematic CUDA errors"""
@@ -84,13 +96,15 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     # First try GPU if available
     if DEVICE == "cuda":
         try:
-            clear_gpu_memory()
-            wav = model.generate(
+            models_clear_gpu_memory()
+            wav = models_generate(
+                model,
                 text,
-                audio_prompt_path=audio_prompt_path,
-                exaggeration=exaggeration,
-                temperature=temperature,
-                cfg_weight=cfg_weight,
+                audio_prompt_path,
+                exaggeration,
+                temperature,
+                0,  # seed_num - set to 0 for no specific seed
+                cfg_weight
             )
             return wav, "GPU"
         except RuntimeError as e:
@@ -106,13 +120,13 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     # CPU fallback or primary CPU mode
     try:
         # Load CPU model if needed
-        cpu_model = ChatterboxTTS.from_pretrained("cpu")
+        cpu_model = models_load_model_cpu()
         wav = cpu_model.generate(
             text,
-            audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration,
-            temperature=temperature,
-            cfg_weight=cfg_weight,
+            audio_prompt_path,
+            exaggeration,
+            temperature,
+            cfg_weight,
         )
         return wav, "CPU"
     except Exception as e:
@@ -121,85 +135,15 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
 def force_cpu_processing():
     """Check if we should force CPU processing for stability"""
     # For multi-voice, always use CPU to avoid CUDA indexing issues
-    return True
+    return models_force_cpu_processing()
 
 def chunk_text_by_sentences(text, max_words=50):
-    """
-    Split text into chunks, breaking at sentence boundaries after reaching max_words
-    """
-    # Split text into sentences using regex to handle multiple punctuation marks
-    sentences = re.split(r'([.!?]+\s*)', text)
-    
-    chunks = []
-    current_chunk = ""
-    current_word_count = 0
-    
-    i = 0
-    while i < len(sentences):
-        sentence = sentences[i].strip()
-        if not sentence:
-            i += 1
-            continue
-            
-        # Add punctuation if it exists
-        if i + 1 < len(sentences) and re.match(r'[.!?]+\s*', sentences[i + 1]):
-            sentence += sentences[i + 1]
-            i += 2
-        else:
-            i += 1
-        
-        sentence_words = len(sentence.split())
-        
-        # If adding this sentence would exceed max_words, start new chunk
-        if current_word_count > 0 and current_word_count + sentence_words > max_words:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence
-            current_word_count = sentence_words
-        else:
-            current_chunk += " " + sentence if current_chunk else sentence
-            current_word_count += sentence_words
-    
-    # Add the last chunk if it exists
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
-    
-    return chunks
+    """Split text into chunks by sentences - using imported version"""
+    return text_chunk_text_by_sentences(text, max_words)
 
 def save_audio_chunks(audio_chunks, sample_rate, project_name, output_dir="audiobook_projects"):
-    """
-    Save audio chunks as numbered WAV files
-    """
-    if not project_name.strip():
-        project_name = "untitled_audiobook"
-    
-    # Sanitize project name
-    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-    safe_project_name = safe_project_name.replace(' ', '_')
-    
-    # Create output directory
-    project_dir = os.path.join(output_dir, safe_project_name)
-    os.makedirs(project_dir, exist_ok=True)
-    
-    saved_files = []
-    
-    for i, audio_chunk in enumerate(audio_chunks, 1):
-        filename = f"{safe_project_name}_{i:03d}.wav"
-        filepath = os.path.join(project_dir, filename)
-        
-        # Save as WAV file
-        with wave.open(filepath, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(sample_rate)
-            
-            # Convert float32 to int16
-            audio_int16 = (audio_chunk * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
-        
-        saved_files.append(filepath)
-    
-    return saved_files, project_dir
+    """Save audio chunks as numbered WAV files - PHASE 4 REFACTOR: using imported version"""
+    return audio_save_audio_chunks(audio_chunks, sample_rate, project_name, output_dir)
 
 def ensure_voice_library_exists(voice_library_path):
     """Ensure the voice library directory exists"""
@@ -252,62 +196,21 @@ def get_audiobook_voice_choices(voice_library_path):
     return choices
 
 def load_text_file(file_path):
-    """Load text from uploaded file"""
-    if file_path is None:
-        return "No file uploaded", "❌ Please upload a text file"
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
-        # Basic validation
-        if not content.strip():
-            return "", "❌ File is empty"
-        
-        word_count = len(content.split())
-        char_count = len(content)
-        
-        status = f"✅ File loaded successfully!\n📄 {word_count:,} words | {char_count:,} characters"
-        
-        return content, status
-        
-    except UnicodeDecodeError:
-        try:
-            # Try with different encoding
-            with open(file_path, 'r', encoding='latin-1') as f:
-                content = f.read()
-            word_count = len(content.split())
-            char_count = len(content)
-            status = f"✅ File loaded (latin-1 encoding)!\n📄 {word_count:,} words | {char_count:,} characters"
-            return content, status
-        except Exception as e:
-            return "", f"❌ Error reading file: {str(e)}"
-    except Exception as e:
-        return "", f"❌ Error loading file: {str(e)}"
+    """Load text content from a file - using imported version"""
+    return text_load_text_file(file_path)
 
 def validate_audiobook_input(text_content, selected_voice, project_name):
-    """Validate inputs for audiobook creation"""
-    issues = []
+    """Validate audiobook input - using imported version with Gradio wrapper"""
+    is_valid, error_msg = text_validate_audiobook_input(text_content, selected_voice, project_name)
     
-    if not text_content or not text_content.strip():
-        issues.append("📝 Text content is required")
-    
-    if not selected_voice:
-        issues.append("🎭 Voice selection is required")
-    
-    if not project_name or not project_name.strip():
-        issues.append("📁 Project name is required")
-    
-    if text_content and len(text_content.strip()) < 10:
-        issues.append("📏 Text is too short (minimum 10 characters)")
-    
-    if issues:
+    if not is_valid:
         return (
             gr.Button("🎵 Create Audiobook", variant="primary", size="lg", interactive=False),
-            "❌ Please fix these issues:\n" + "\n".join(f"• {issue}" for issue in issues), 
+            error_msg,
             gr.Audio(visible=False)
         )
     
+    # If valid, show success message with stats
     word_count = len(text_content.split())
     chunks = chunk_text_by_sentences(text_content)
     chunk_count = len(chunks)
@@ -358,27 +261,15 @@ def get_voice_config(voice_library_path, voice_name):
 
 def clear_gpu_memory():
     """Clear GPU memory cache to prevent CUDA errors"""
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+    return models_clear_gpu_memory()
 
 def check_gpu_memory():
     """Check GPU memory status for troubleshooting"""
-    if torch.cuda.is_available():
-        allocated = torch.cuda.memory_allocated()
-        cached = torch.cuda.memory_reserved()
-        return f"GPU Memory - Allocated: {allocated//1024//1024}MB, Cached: {cached//1024//1024}MB"
-    return "CUDA not available"
+    return models_check_gpu_memory()
 
 def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
-    """
-    Adaptive text chunking that reduces chunk size if CUDA errors occur
-    """
-    if reduce_on_error:
-        # Start with smaller chunks for multi-voice to reduce memory pressure
-        max_words = min(max_words, 35)
-    
-    return chunk_text_by_sentences(text, max_words)
+    """Adaptively chunk text - using imported version"""
+    return text_adaptive_chunk_text(text, max_words, reduce_on_error)
 
 def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3):
     """Generate audio with retry logic for CUDA errors"""
@@ -386,14 +277,16 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
         try:
             # Clear memory before generation
             if retry > 0:
-                clear_gpu_memory()
+                models_clear_gpu_memory()
             
-            wav = model.generate(
+            wav = models_generate(
+                model,
                 text,
-                audio_prompt_path=audio_prompt_path,
-                exaggeration=exaggeration,
-                temperature=temperature,
-                cfg_weight=cfg_weight,
+                audio_prompt_path,
+                exaggeration,
+                temperature,
+                0,  # seed_num - set to 0 for no specific seed
+                cfg_weight
             )
             return wav
             
@@ -404,7 +297,7 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
                 
                 if retry < max_retries - 1:
                     print(f"⚠️ GPU error, retry {retry + 1}/{max_retries}: {str(e)[:100]}...")
-                    clear_gpu_memory()
+                    models_clear_gpu_memory()
                     continue
                 else:
                     raise RuntimeError(f"Failed after {max_retries} retries: {str(e)}")
@@ -472,7 +365,6 @@ def create_audiobook(
     # If resuming, only process missing chunks
     start_idx = 0
     if resume and completed_chunks:
-        # Find first missing chunk
         for i in range(total_chunks):
             if i not in completed_chunks:
                 start_idx = i
@@ -484,11 +376,11 @@ def create_audiobook(
 
     # Initialize model if needed
     if model is None:
-        model = ChatterboxTTS.from_pretrained(DEVICE)
+        model = models_load_model()
 
     audio_chunks: List[np.ndarray] = []
     status_updates = []
-    clear_gpu_memory()
+    models_clear_gpu_memory()
 
     # For resume, load already completed audio
     for i in range(start_idx):
@@ -515,7 +407,8 @@ def create_audiobook(
                 voice_config['temperature'],
                 voice_config['cfg_weight']
             )
-            audio_np = wav.squeeze(0).cpu().numpy()
+            # wav is a tuple (sample_rate, audio_array) from models_generate
+            sample_rate, audio_np = wav
             audio_chunks.append(audio_np)
             # Save this chunk immediately
             fname = os.path.join(project_dir, chunk_filenames[i])
@@ -526,7 +419,7 @@ def create_audiobook(
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
             del wav
-            clear_gpu_memory()
+            models_clear_gpu_memory()
         except Exception as chunk_error:
             return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
         # Autosave every N chunks
@@ -548,6 +441,10 @@ def create_audiobook(
                 chunks=chunks,
                 project_type="single_voice"
             )
+    # PHASE 4 REFACTOR FIX: Add safety check for empty audio_chunks before concatenation
+    if not audio_chunks:
+        return None, f"❌ No audio chunks were generated. Check your voice configuration and text input."
+        
     # Combine all audio for preview (just concatenate)
     combined_audio = np.concatenate(audio_chunks)
     total_words = len(text_content.split())
@@ -723,115 +620,79 @@ def update_voice_library_path(new_path):
 def parse_multi_voice_text(text):
     """
     Parse text with voice tags like [voice_name] and return segments with associated voices
-    Automatically removes character names from spoken text when they match the voice tag
+    Handles tags and dialogue on the same line.
     Returns: [(voice_name, text_segment), ...]
     """
     import re
-    
-    # Split text by voice tags but keep the tags
-    pattern = r'(\[([^\]]+)\])'
-    parts = re.split(pattern, text)
-    
     segments = []
+    
+    # Regex to find [CharacterName] tags
+    # It captures the character name and the text that follows until the next tag or end of string
+    # Using re.split to capture text between tags and the tags themselves
+    parts = re.split(r'(\[[^\]]+\])', text)
+    
     current_voice = None
+    buffer = ""
     
-    i = 0
-    while i < len(parts):
-        part = parts[i].strip()
-        
+    for part in parts:
         if not part:
-            i += 1
-            continue
+            continue # Skip empty parts that can result from re.split
             
-        # Check if this is a voice tag
-        if part.startswith('[') and part.endswith(']'):
-            # This is a voice tag
-            current_voice = part[1:-1]  # Remove brackets
-            i += 1
-        else:
-            # This is text content
-            if part and current_voice:
-                # Clean the text by removing character name if it matches the voice tag
-                cleaned_text = clean_character_name_from_text(part, current_voice)
-                # Only add non-empty segments after cleaning
-                if cleaned_text.strip():
-                    segments.append((current_voice, cleaned_text))
-                else:
-                    print(f"[DEBUG] Skipping empty segment after cleaning for voice '{current_voice}'")
-            elif part:
-                # Text without voice tag - use default
-                segments.append((None, part))
-            i += 1
-    
+        part_stripped = part.strip()
+        if re.match(r'^\[[^\]]+\]$', part_stripped): # It's a character tag
+            if current_voice and buffer.strip():
+                segments.append((current_voice, buffer.strip()))
+            current_voice = part_stripped[1:-1] # Remove brackets
+            buffer = ""
+        else: # It's text content
+            if current_voice is None and part_stripped: # Text before any character tag
+                # This text will be associated with a "No Voice Tag" or a default narrator later if needed,
+                # or could be an error depending on strictness. For now, assign to None.
+                segments.append((None, part_stripped))
+                buffer = "" # Clear buffer as this part is processed
+            else:
+                buffer += part # Append to current character's text buffer
+                
+    # Add any remaining text in the buffer for the last voice
+    if current_voice and buffer.strip():
+        segments.append((current_voice, buffer.strip()))
+    elif not current_voice and buffer.strip(): # Text at the end with no preceding tag in the loop's logic
+        segments.append((None, buffer.strip()))
+        
+    # Filter out any segments where the text is empty after stripping, just in case
+    segments = [(voice, txt) for voice, txt in segments if txt]
+
+    # Debug: Print parsed segments
+    # print("Parsed Segments by parse_multi_voice_text in main:", segments)
     return segments
 
 def clean_character_name_from_text(text, voice_name):
+    """Clean character name from text. 
+       The new parse_multi_voice_text should handle separation, 
+       so this function now primarily acts as a pass-through or for minor cleanup if needed.
     """
-    Remove character name from the beginning of text if it matches the voice name
-    Handles various formats like 'P1', 'P1:', 'P1 -', etc.
-    """
-    text = text.strip()
-    
-    # If the entire text is just the voice name (with possible punctuation), return empty
-    if text.lower().replace(':', '').replace('.', '').replace('-', '').strip() == voice_name.lower():
-        print(f"[DEBUG] Text is just the voice name '{voice_name}', returning empty")
-        return ""
-    
-    # Create variations of the voice name to check for
-    voice_variations = [
-        voice_name,                    # af_sarah
-        voice_name.upper(),            # AF_SARAH  
-        voice_name.lower(),            # af_sarah
-        voice_name.capitalize(),       # Af_sarah
-    ]
-    
-    # Also add variations without underscores for more flexible matching
-    for voice_var in voice_variations[:]:
-        if '_' in voice_var:
-            voice_variations.append(voice_var.replace('_', ' '))  # af sarah
-            voice_variations.append(voice_var.replace('_', ''))   # afsarah
-    
-    for voice_var in voice_variations:
-        # Check for various patterns:
-        # "af_sarah text..." -> "text..."
-        # "af_sarah: text..." -> "text..."
-        # "af_sarah - text..." -> "text..."
-        # "af_sarah. text..." -> "text..."
-        patterns = [
-            rf'^{re.escape(voice_var)}\s+',      # "af_sarah "
-            rf'^{re.escape(voice_var)}:\s*',     # "af_sarah:" or "af_sarah: "
-            rf'^{re.escape(voice_var)}\.\s*',    # "af_sarah." or "af_sarah. "
-            rf'^{re.escape(voice_var)}\s*-\s*',  # "af_sarah -" or "af_sarah-"
-            rf'^{re.escape(voice_var)}\s*\|\s*', # "af_sarah |" or "af_sarah|"
-            rf'^{re.escape(voice_var)}\s*\.\.\.', # "af_sarah..."
-        ]
-        
-        for pattern in patterns:
-            if re.match(pattern, text, re.IGNORECASE):
-                # Remove the matched pattern and return the remaining text
-                cleaned = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
-                print(f"[DEBUG] Cleaned text for voice '{voice_name}': '{text[:50]}...' -> '{cleaned[:50] if cleaned else '(empty)'}'")
-                return cleaned
-    
-    # If no character name pattern found, return original text
-    return text
+    # The main parsing logic in `parse_multi_voice_text` should already have separated
+    # the character name from the dialogue. This function can be simplified.
+    # If specific cleaning of the *text content itself* (post-name-extraction) is ever needed,
+    # that logic would go here. For now, we assume the text from the parser is clean.
+    return text.strip() # Basic stripping is usually safe.
 
 def chunk_multi_voice_segments(segments, max_words=50):
-    """
-    Take voice segments and chunk them appropriately while preserving voice assignments
-    Returns: [(voice_name, chunk_text), ...]
-    """
-    final_chunks = []
-    
+    """Chunk multi-voice segments - using imported version with format conversion"""
+    # Convert from [(voice_name, text)] to [{'character': 'name', 'text': 'content'}]
+    converted_segments = []
     for voice_name, text in segments:
-        # Chunk this segment using the same sentence boundary logic
-        text_chunks = chunk_text_by_sentences(text, max_words)
-        
-        # Add voice assignment to each chunk
-        for chunk in text_chunks:
-            final_chunks.append((voice_name, chunk))
+        converted_segments.append({'character': voice_name, 'text': text})
     
-    return final_chunks
+    # Call the imported function
+    chunked_segments = text_chunk_multi_voice_segments(converted_segments, max_words)
+    
+    # Convert back to [(voice_name, text)] format
+    result = []
+    for segment in chunked_segments:
+        result.append((segment['character'], segment['text']))
+    
+    return result
 
 def validate_multi_voice_text(text_content, voice_library_path):
     """
@@ -873,7 +734,51 @@ def validate_multi_voice_text(text_content, voice_library_path):
     
     return True, "✅ All voices found and text properly tagged", voice_counts
 
+def old_validate_multi_voice_text(text_content, voice_library_path):
+    """
+    Validate multi-voice text and check if all referenced voices exist
+    Returns: (is_valid, message, voice_counts)
+    """
+    if not text_content or not text_content.strip():
+        return False, "❌ Text content is required", {}
+    
+    # Parse the text to find voice references
+    segments = parse_multi_voice_text(text_content)
+    
+    if not segments:
+        return False, "❌ No valid voice segments found", {}
+    
+    # Count voice usage and check availability
+    voice_counts = {}
+    missing_voices = []
+    available_voices = [p['name'] for p in get_voice_profiles(voice_library_path)]
+    
+    for voice_name, text_segment in segments:
+        if voice_name is None:
+            voice_name = "No Voice Tag"
+        
+        if voice_name not in voice_counts:
+            voice_counts[voice_name] = 0
+        voice_counts[voice_name] += len(text_segment.split())
+        
+        # Check if voice exists (skip None/default)
+        if voice_name != "No Voice Tag" and voice_name not in available_voices:
+            if voice_name not in missing_voices:
+                missing_voices.append(voice_name)
+    
+    if missing_voices:
+        return False, f"❌ Missing voices: {', '.join(missing_voices)}", voice_counts
+    
+    if "No Voice Tag" in voice_counts:
+        return False, "❌ Found text without voice tags. All text must be assigned to a voice using [voice_name]", voice_counts
+    
+    return True, "✅ All voices found and text properly tagged", voice_counts
+
 def validate_multi_audiobook_input(text_content, voice_library_path, project_name):
+    """Validate inputs for multi-voice audiobook creation - using imported version"""
+    return text_validate_multi_audiobook_input(text_content, voice_library_path, project_name)
+
+def old_validate_multi_audiobook_input(text_content, voice_library_path, project_name):
     """Validate inputs for multi-voice audiobook creation"""
     issues = []
     
@@ -930,7 +835,7 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
         
         # Initialize model if needed
         if model is None:
-            model = ChatterboxTTS.from_pretrained(DEVICE)
+            model = models_load_model()
         
         audio_chunks = []
         chunk_info = []  # For saving metadata
@@ -949,12 +854,14 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
             status_msg = f"🎵 Processing chunk {i}/{total_chunks}\n🎭 Voice: {voice_config['display_name']} ({voice_name})\n📝 Chunk {i}: {chunk_words} words\n📊 Progress: {i}/{total_chunks} chunks"
             
             # Generate audio for this chunk
-            wav = model.generate(
+            wav = models_generate(
+                model,
                 chunk_text,
-                audio_prompt_path=voice_config['audio_file'],
-                exaggeration=voice_config['exaggeration'],
-                temperature=voice_config['temperature'],
-                cfg_weight=voice_config['cfg_weight'],
+                voice_config['audio_file'],
+                voice_config['exaggeration'],
+                voice_config['temperature'],
+                0,  # seed_num - set to 0 for no specific seed
+                voice_config['cfg_weight']
             )
             
             audio_chunks.append(wav.squeeze(0).numpy())
@@ -988,6 +895,20 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
         return None, error_msg
 
 def analyze_multi_voice_text(text_content, voice_library_path):
+    """Analyze multi-voice text - using imported version with Gradio wrapper"""
+    is_valid, error_msg, voice_counts = text_analyze_multi_voice_text(text_content, voice_library_path)
+    
+    if not is_valid:
+        return "", {}, gr.Group(visible=False), error_msg
+    
+    # If valid, create breakdown text
+    breakdown_text = "✅ Voice tags found:\n"
+    for voice, words in voice_counts.items():
+        breakdown_text += f"🎭 [{voice}]: {words} words\n"
+    
+    return breakdown_text, voice_counts, gr.Group(visible=True), "✅ Analysis complete - assign voices below"
+
+def old_analyze_multi_voice_text(text_content, voice_library_path):
     """
     Analyze multi-voice text and return character breakdown with voice assignment interface
     """
@@ -1124,22 +1045,7 @@ def validate_dropdown_assignments(text_content, voice_library_path, project_name
 
 def get_model_device_str(model_obj):
     """Safely get the device string ("cuda" or "cpu") from a model object."""
-    if not model_obj or not hasattr(model_obj, 'device'):
-        # print("⚠️ Model object is None or has no device attribute.")
-        return None 
-    
-    device_attr = model_obj.device
-    if isinstance(device_attr, torch.device):
-        return device_attr.type
-    elif isinstance(device_attr, str):
-        if device_attr in ["cuda", "cpu"]:
-            return device_attr
-        else:
-            print(f"⚠️ Unexpected string for model.device: {device_attr}")
-            return None 
-    else:
-        print(f"⚠️ Unexpected type for model.device: {type(device_attr)}")
-        return None
+    return models_get_model_device_str(model_obj)
 
 def _filter_problematic_short_chunks(chunks, voice_assignments):
     """Helper to filter out very short chunks that likely represent only character tags."""
@@ -1232,7 +1138,7 @@ def create_multi_voice_audiobook_with_assignments(
 
     if not text_content or not project_name or not voice_assignments:
         error_msg = "❌ Missing required fields or voice assignments. Ensure text is entered, project name is set, and voices are assigned after analyzing text."
-        return None, None, error_msg, None
+        return None, error_msg
 
     # Parse the text and map voices
     segments = parse_multi_voice_text(text_content)
@@ -1242,14 +1148,14 @@ def create_multi_voice_audiobook_with_assignments(
             actual_voice = voice_assignments[character_name]
             mapped_segments.append((actual_voice, text_segment))
         else:
-            return None, None, f"❌ No voice assignment found for character '{character_name}'", None
+            return None, f"❌ No voice assignment found for character '{character_name}'"
 
     initial_max_words = 30 if DEVICE == "cuda" else 40
     chunks = chunk_multi_voice_segments(mapped_segments, max_words=initial_max_words)
     chunks = _filter_problematic_short_chunks(chunks, voice_assignments)
     total_chunks = len(chunks)
     if not chunks:
-        return None, None, "❌ No text chunks to process", None
+        return None, "❌ No text chunks to process"
 
     # Project directory
     safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
@@ -1311,11 +1217,11 @@ def create_multi_voice_audiobook_with_assignments(
         try:
             voice_config = get_voice_config(voice_library_path, voice_name)
             if not voice_config:
-                return None, None, f"❌ Could not load voice config for '{voice_name}'", None
+                return None, f"❌ Could not load voice config for '{voice_name}'"
             if not voice_config['audio_file']:
-                return None, None, f"❌ No audio file for voice '{voice_config['display_name']}'", None
+                return None, f"❌ No audio file for voice '{voice_config['display_name']}'"
             if not os.path.exists(voice_config['audio_file']):
-                return None, None, f"❌ Audio file not found: {voice_config['audio_file']}", None
+                return None, f"❌ Audio file not found: {voice_config['audio_file']}"
             wav = processing_model.generate(
                 chunk_text, audio_prompt_path=voice_config['audio_file'],
                 exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
@@ -1334,7 +1240,7 @@ def create_multi_voice_audiobook_with_assignments(
             if get_model_device_str(processing_model) == 'cuda':
                 torch.cuda.empty_cache()
         except Exception as chunk_error_outer:
-            return None, None, f"❌ Outer error processing chunk {i+1} (voice: {voice_name}): {str(chunk_error_outer)}", None
+            return None, f"❌ Outer error processing chunk {i+1} (voice: {voice_name}): {str(chunk_error_outer)}"
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
             # Save project metadata
@@ -1358,7 +1264,8 @@ def create_multi_voice_audiobook_with_assignments(
                    f"📁 Saved to: {project_dir}\n"
                    f"🎵 Files: {len(audio_chunks)} audio chunks\n"
                    f"\nVoice Assignments:\n{assignment_summary}")
-    return (processing_model.sr, combined_audio), None, success_msg, None
+    # PHASE 4 REFACTOR FIX: Fixed return values - should return only 2 values not 4
+    return (processing_model.sr, combined_audio), success_msg
 
 def handle_multi_voice_analysis(text_content, voice_library_path):
     """
@@ -2080,13 +1987,29 @@ def get_project_chunks(project_name: str) -> list:
         
         # Check if it matches the pattern: projectname_XXX.wav
         import re
-        pattern = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
-        if re.match(pattern, wav_file):
+        # Single voice: projectname_XXX.wav
+        # Multi-voice: projectname_XXX_CharacterName.wav
+        single_voice_pattern = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
+        multi_voice_pattern = rf'^{re.escape(project_name)}_(\d{{3}})_[^_]+\.wav$'
+        
+        if re.match(single_voice_pattern, wav_file) or re.match(multi_voice_pattern, wav_file):
             chunk_files.append(wav_file)
     
     # Sort by chunk number (numerically, not lexicographically)
     def extract_chunk_num_from_filename(filename: str) -> int:
         import re
+        # PHASE 4 REFACTOR FIX: Handle both single-voice and multi-voice patterns
+        # Try multi-voice pattern first: projectname_XXX_CharacterName.wav
+        match = re.search(rf'^{re.escape(project_name)}_(\d{{3}})_[^_]+\.wav$', filename)
+        if match:
+            return int(match.group(1))
+        
+        # Try single-voice pattern: projectname_XXX.wav
+        match = re.search(rf'^{re.escape(project_name)}_(\d{{3}})\.wav$', filename)
+        if match:
+            return int(match.group(1))
+            
+        # Fallback to original patterns
         match = re.search(r'_(\d{3})\.wav$', filename)
         if not match:
             match = re.search(r'_(\d+)\.wav$', filename)
@@ -3879,7 +3802,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 with gr.Row():
                                     silence_threshold = gr.Slider(
                                         minimum=-80,
-                                        maximum=-20,
+                                        maximum=-10,
                                         value=-50,
                                         step=5,
                                         label="Silence Threshold (dB)",
@@ -3914,6 +3837,57 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 
                                 cleanup_results = gr.HTML(
                                     "<div class='voice-status'>📝 Cleanup results will appear here</div>"
+                                )
+                            
+                            # ENHANCED: Audio Preview Section
+                            with gr.Group():
+                                gr.HTML("<h4>🎧 Audio Preview</h4>")
+                                
+                                with gr.Row():
+                                    preview_file_dropdown = gr.Dropdown(
+                                        choices=[],
+                                        label="Select Sample File",
+                                        value=None,
+                                        info="Choose a file to preview cleanup"
+                                    )
+                                    refresh_preview_files_btn = gr.Button(
+                                        "🔄",
+                                        size="sm"
+                                    )
+                                
+                                with gr.Row():
+                                    with gr.Column():
+                                        gr.HTML("<h5>📁 Original Audio</h5>")
+                                        original_audio_player = gr.Audio(
+                                            label="Before Cleanup",
+                                            interactive=False,
+                                            show_download_button=False
+                                        )
+                                    
+                                    with gr.Column():
+                                        gr.HTML("<h5>✨ Cleaned Preview</h5>")
+                                        cleaned_audio_player = gr.Audio(
+                                            label="After Cleanup (Preview)",
+                                            interactive=False,
+                                            show_download_button=False
+                                        )
+                                
+                                with gr.Row():
+                                    create_preview_btn = gr.Button(
+                                        "👁️ Create Audio Preview",
+                                        variant="secondary",
+                                        size="lg",
+                                        interactive=False
+                                    )
+                                    confirm_cleanup_btn = gr.Button(
+                                        "✅ Apply These Settings to All Files",
+                                        variant="primary",
+                                        size="lg",
+                                        interactive=False
+                                    )
+                                
+                                audio_preview_status = gr.HTML(
+                                    "<div class='voice-status'>🎧 Load a project and select a file to preview cleanup</div>"
                                 )
                             
                             # Add hidden state for clean samples
@@ -4849,7 +4823,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                     # Apply manual trimming
                     audio_tuple = (sample_rate, audio_data)
                     end_time_actual = None if end_time <= 0 else end_time
-                    trimmed_audio, status_msg = extract_audio_segment(audio_tuple, start_time, end_time_actual)
+                    trimmed_audio, status_msg = audio_extract_audio_segment(audio_tuple, start_time, end_time_actual)
                     
                     if trimmed_audio:
                         # Save the trimmed audio
@@ -5123,6 +5097,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     def auto_remove_dead_space(project_name: str, silence_threshold: float = -50.0, min_silence_duration: float = 0.5) -> tuple:
         """
         Automatically detect and remove dead space/silence from all audio chunks in a project.
+        ENHANCED: Now detects quiet sections throughout entire chunks, not just beginning/end.
         
         Args:
             project_name: Name of the project to process
@@ -5163,45 +5138,79 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                     
                     # Load audio
                     audio, sr = librosa.load(chunk_path, sr=None)
+                    original_duration = len(audio) / sr
                     
-                    # Convert to dB
+                    # SIMPLIFIED ENHANCED DETECTION: Remove quiet sections throughout the audio
+                    # Convert to dB for better silence detection
                     audio_db = librosa.amplitude_to_db(np.abs(audio), ref=np.max)
                     
-                    # Find non-silent regions
-                    non_silent = audio_db > silence_threshold
+                    # Create binary mask: True for audio above threshold, False for quiet/silent
+                    non_silent_mask = audio_db > silence_threshold
                     
-                    # Find the start and end of non-silent regions
-                    if np.any(non_silent):
-                        non_silent_indices = np.where(non_silent)[0]
-                        start_idx = non_silent_indices[0]
-                        end_idx = non_silent_indices[-1] + 1
+                    if np.any(non_silent_mask):
+                        # Use librosa's built-in function to find non-silent intervals
+                        # This is much more robust than my custom implementation
+                        from librosa.effects import split
                         
-                        # Trim the audio
-                        trimmed_audio = audio[start_idx:end_idx]
+                        # Convert silence threshold from dB to linear scale
+                        silence_threshold_linear = librosa.db_to_amplitude(silence_threshold)
                         
-                        # Only save if we actually trimmed something significant
-                        original_duration = len(audio) / sr
-                        trimmed_duration = len(trimmed_audio) / sr
+                        # Find non-silent segments using librosa's split function
+                        # This automatically handles all the edge cases I was struggling with
+                        non_silent_intervals = split(audio, 
+                                                   top_db=-silence_threshold,  # Convert our dB threshold
+                                                   hop_length=512,
+                                                   frame_length=2048)
                         
-                        if original_duration - trimmed_duration > min_silence_duration:
-                            # Save the trimmed audio
-                            sf.write(chunk_path, trimmed_audio, sr)
-                            processed_count += 1
-                            print(f"Trimmed {chunk_file}: {original_duration:.2f}s -> {trimmed_duration:.2f}s")
+                        if len(non_silent_intervals) > 0:
+                            # Collect all non-silent segments
+                            cleaned_segments = []
+                            total_removed_duration = 0
+                            
+                            for start_sample, end_sample in non_silent_intervals:
+                                segment = audio[start_sample:end_sample]
+                                segment_duration = len(segment) / sr
+                                
+                                # Only keep segments that are long enough to be meaningful
+                                if segment_duration >= 0.1:  # Minimum 0.1 second segments
+                                    cleaned_segments.append(segment)
+                            
+                            if cleaned_segments:
+                                # Combine all segments
+                                cleaned_audio = np.concatenate(cleaned_segments)
+                                cleaned_duration = len(cleaned_audio) / sr
+                                time_saved = original_duration - cleaned_duration
+                                
+                                # Only save if we actually removed significant silence
+                                if time_saved >= min_silence_duration:
+                                    # Save the cleaned audio
+                                    sf.write(chunk_path, cleaned_audio, sr)
+                                    processed_count += 1
+                                    print(f"🧹 Cleaned {chunk_file}: {original_duration:.2f}s → {cleaned_duration:.2f}s (saved {time_saved:.2f}s)")
+                                else:
+                                    # Remove backup if no significant change
+                                    os.remove(backup_path)
+                            else:
+                                errors.append(f"{chunk_file}: No meaningful audio segments found")
+                                os.remove(backup_path)
                         else:
-                            # Remove backup if no significant change
+                            errors.append(f"{chunk_file}: No non-silent intervals detected")
                             os.remove(backup_path)
                     else:
                         errors.append(f"{chunk_file}: Appears to be completely silent")
+                        os.remove(backup_path)
                         
                 except Exception as e:
                     errors.append(f"{chunk_file}: {str(e)}")
+                    # Remove backup if processing failed
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
                     continue
             
             if processed_count > 0:
-                success_msg = f"✅ Successfully processed {processed_count} chunks. Backups saved in backup_before_cleanup folder."
+                success_msg = f"✅ Successfully cleaned {processed_count} chunks with enhanced detection! Backups saved in backup_before_cleanup folder."
             else:
-                success_msg = f"ℹ️ No dead space found to remove in {len(chunk_files)} chunks."
+                success_msg = f"ℹ️ No significant quiet sections found in {len(chunk_files)} chunks with current settings. Try adjusting the silence threshold or minimum duration."
                 
             return success_msg, processed_count, errors
             
@@ -5323,42 +5332,131 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     def load_clean_project(project_name: str) -> tuple:
         """Load a project for cleaning operations"""
         if not project_name:
-            return "📁 Select a project to start cleaning", True, True, True, project_name
+            return (
+                "📁 Select a project to start cleaning", 
+                gr.Button("🔍 Analyze Audio Quality", interactive=False),
+                gr.Button("🧹 Auto Remove Dead Space", interactive=False),
+                gr.Button("👁️ Preview Changes", interactive=False),
+                "",
+                gr.Dropdown(choices=[], value=None)  # Empty dropdown
+            )
         
         project_dir = os.path.join("audiobook_projects", project_name)
         if not os.path.exists(project_dir):
-            return f"❌ Project '{project_name}' not found", True, True, True, ""
+            return (
+                f"❌ Project '{project_name}' not found", 
+                gr.Button("🔍 Analyze Audio Quality", interactive=False),
+                gr.Button("🧹 Auto Remove Dead Space", interactive=False),
+                gr.Button("👁️ Preview Changes", interactive=False),
+                "",
+                gr.Dropdown(choices=[], value=None)
+            )
         
         chunk_files = [f for f in os.listdir(project_dir) if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
         if not chunk_files:
-            return f"❌ No audio chunks found in project '{project_name}'", True, True, True, ""
+            return (
+                f"❌ No audio chunks found in project '{project_name}'", 
+                gr.Button("🔍 Analyze Audio Quality", interactive=False),
+                gr.Button("🧹 Auto Remove Dead Space", interactive=False),
+                gr.Button("👁️ Preview Changes", interactive=False),
+                "",
+                gr.Dropdown(choices=[], value=None)
+            )
         
+        # Sort files for consistent ordering
+        chunk_files.sort()
         status_msg = f"✅ Project '{project_name}' loaded successfully!<br/>📊 Found {len(chunk_files)} audio chunks ready for analysis and cleaning."
-        return status_msg, True, True, True, project_name
+        return (
+            status_msg, 
+            gr.Button("🔍 Analyze Audio Quality", variant="secondary", size="lg", interactive=True),
+            gr.Button("🧹 Auto Remove Dead Space", variant="primary", size="lg", interactive=True),
+            gr.Button("👁️ Preview Changes", variant="secondary", size="lg", interactive=True),
+            project_name,
+            gr.Dropdown(choices=chunk_files, value=chunk_files[0] if chunk_files else None)  # Populate with files
+        )
     
-    refresh_clean_projects_btn.click(
-        fn=lambda: get_project_choices(),
-        inputs=[],
-        outputs=clean_project_dropdown
-    )
+    def create_audio_preview(project_name: str, selected_file: str, silence_threshold: float, min_silence_duration: float) -> tuple:
+        """Create a preview of how cleanup will affect a specific file - ALWAYS regenerates with current settings"""
+        if not project_name or not selected_file:
+            return None, None, "❌ Select a project and file first"
+        
+        try:
+            import librosa
+            import numpy as np
+            import soundfile as sf
+            import os
+            import tempfile
+            
+            # Always show current settings being used
+            settings_info = f"🔧 Using Settings: Threshold={silence_threshold}dB, Min Duration={min_silence_duration}s<br/>"
+            
+            project_dir = os.path.join("audiobook_projects", project_name)
+            original_path = os.path.join(project_dir, selected_file)
+            
+            if not os.path.exists(original_path):
+                return None, None, f"❌ File {selected_file} not found"
+            
+            # ALWAYS reload audio fresh (no caching)
+            audio, sr = librosa.load(original_path, sr=None)
+            original_duration = len(audio) / sr
+            
+            # Create cleaned version using CURRENT settings
+            audio_db = librosa.amplitude_to_db(np.abs(audio), ref=np.max)
+            non_silent_mask = audio_db > silence_threshold  # Use current threshold
+            
+            if np.any(non_silent_mask):
+                from librosa.effects import split
+                non_silent_intervals = split(audio, 
+                                           top_db=-silence_threshold,  # Use current threshold
+                                           hop_length=512,
+                                           frame_length=2048)
+                
+                if len(non_silent_intervals) > 0:
+                    cleaned_segments = []
+                    for start_sample, end_sample in non_silent_intervals:
+                        segment = audio[start_sample:end_sample]
+                        segment_duration = len(segment) / sr
+                        if segment_duration >= 0.1:
+                            cleaned_segments.append(segment)
+                    
+                    if cleaned_segments:
+                        cleaned_audio = np.concatenate(cleaned_segments)
+                        cleaned_duration = len(cleaned_audio) / sr
+                        time_saved = original_duration - cleaned_duration
+                        
+                        # Only apply change if it meets minimum duration requirement
+                        if time_saved >= min_silence_duration:  # Use current min duration
+                            status_msg = (f"{settings_info}"
+                                        f"🎧 Preview created for {selected_file}<br/>"
+                                        f"⏱️ Original: {original_duration:.2f}s → Cleaned: {cleaned_duration:.2f}s<br/>"
+                                        f"💾 Time saved: {time_saved:.2f}s<br/>"
+                                        f"✅ Changes would be applied with these settings")
+                            
+                            return (sr, audio), (sr, cleaned_audio), status_msg
+                        else:
+                            status_msg = (f"{settings_info}"
+                                        f"🎧 Preview created for {selected_file}<br/>"
+                                        f"⏱️ Original: {original_duration:.2f}s → Would be: {cleaned_duration:.2f}s<br/>"
+                                        f"💾 Time saved: {time_saved:.2f}s<br/>"
+                                        f"⚠️ Changes too small (< {min_silence_duration}s) - no changes would be applied")
+                            
+                            return (sr, audio), (sr, audio), status_msg  # Return original for both if changes too small
+                    else:
+                        return (sr, audio), None, f"{settings_info}⚠️ All audio would be removed with these settings"
+                else:
+                    return (sr, audio), None, f"{settings_info}⚠️ No audio segments detected with these settings"
+            else:
+                return (sr, audio), None, f"{settings_info}⚠️ File appears completely silent with threshold {silence_threshold} dB"
+                
+        except Exception as e:
+            return None, None, f"❌ Error creating preview: {str(e)}"
     
-    load_clean_project_btn.click(
-        fn=load_clean_project,
-        inputs=[clean_project_dropdown],
-        outputs=[clean_project_status, analyze_audio_btn, auto_clean_btn, preview_clean_btn, clean_project_state]
-    )
-    
-    analyze_audio_btn.click(
-        fn=analyze_project_audio_quality,
-        inputs=[clean_project_state],
-        outputs=[audio_analysis_results]
-    )
-    
-    def handle_auto_clean(project_name: str, silence_threshold: float, min_silence_duration: float) -> tuple:
-        """Handle automatic dead space removal"""
+    def confirm_full_cleanup(project_name: str, silence_threshold: float, min_silence_duration: float) -> tuple:
+        """Apply the preview settings to all files in the project"""
         if not project_name:
             return "❌ No project loaded", "📝 Load a project first"
         
+        # Use the existing auto_remove_dead_space function with current settings
         result = auto_remove_dead_space(project_name, silence_threshold, min_silence_duration)
         success_msg, processed_count, errors = result
         
@@ -5370,45 +5468,88 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         
         detailed_results = f"""
         <div class='instruction-box'>
-            <h4>🧹 Cleanup Results:</h4>
+            <h4>✅ Cleanup Applied to All Files:</h4>
             <p><strong>Files Processed:</strong> {processed_count}</p>
             <p><strong>Status:</strong> {success_msg}</p>
+            <p><strong>💡 Note:</strong> Backups of original files saved in backup_before_cleanup folder.</p>
         </div>
         """
         
         return success_msg, detailed_results
     
-    auto_clean_btn.click(
-        fn=handle_auto_clean,
+    # Event handlers for Clean Samples tab
+    refresh_clean_projects_btn.click(
+        fn=lambda: get_project_choices(),
+        inputs=[],
+        outputs=clean_project_dropdown
+    )
+    
+    # Refresh preview files dropdown
+    refresh_preview_files_btn.click(
+        fn=lambda project_name: gr.Dropdown(
+            choices=[f for f in os.listdir(os.path.join("audiobook_projects", project_name)) 
+                     if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
+                     if project_name and os.path.exists(os.path.join("audiobook_projects", project_name)) else [],
+            value=None
+        ),
+        inputs=[clean_project_state],
+        outputs=[preview_file_dropdown]
+    )
+    
+    load_clean_project_btn.click(
+        fn=load_clean_project,
+        inputs=[clean_project_dropdown],
+        outputs=[clean_project_status, analyze_audio_btn, auto_clean_btn, preview_clean_btn, clean_project_state, preview_file_dropdown]
+    )
+    
+    # Enable preview buttons when project is loaded
+    clean_project_state.change(
+        fn=lambda project_name: (
+            gr.Button("👁️ Create Audio Preview", interactive=bool(project_name)),
+            gr.Button("✅ Apply These Settings to All Files", interactive=bool(project_name))
+        ),
+        inputs=[clean_project_state],
+        outputs=[create_preview_btn, confirm_cleanup_btn]
+    )
+    
+    # Also enable preview button when a file is selected
+    preview_file_dropdown.change(
+        fn=lambda selected_file: gr.Button("👁️ Create Audio Preview", interactive=bool(selected_file)),
+        inputs=[preview_file_dropdown],
+        outputs=[create_preview_btn]
+    )
+    
+    analyze_audio_btn.click(
+        fn=analyze_project_audio_quality,
+        inputs=[clean_project_state],
+        outputs=[audio_analysis_results]
+    )
+    
+    # Handle creating audio preview
+    create_preview_btn.click(
+        fn=create_audio_preview,
+        inputs=[clean_project_state, preview_file_dropdown, silence_threshold, min_silence_duration],
+        outputs=[original_audio_player, cleaned_audio_player, audio_preview_status]
+    )
+    
+    # Handle applying settings to all files
+    confirm_cleanup_btn.click(
+        fn=confirm_full_cleanup,
         inputs=[clean_project_state, silence_threshold, min_silence_duration],
         outputs=[cleanup_status, cleanup_results]
     )
     
-    def preview_cleanup_changes(project_name: str, silence_threshold: float, min_silence_duration: float) -> str:
-        """Preview what will be cleaned without making changes"""
-        if not project_name:
-            return "❌ No project loaded"
-        
-        # This would analyze without making changes
-        analysis_result = analyze_project_audio_quality(project_name)
-        report, metrics = analysis_result
-        
-        preview_msg = f"""
-        <div class='instruction-box'>
-            <h4>👁️ Cleanup Preview:</h4>
-            <p><strong>Silence Threshold:</strong> {silence_threshold} dB</p>
-            <p><strong>Min Silence Duration:</strong> {min_silence_duration}s</p>
-            <p><strong>Potential Issues Found:</strong></p>
-            {report}
-            <p><strong>💡 Note:</strong> This is a preview - no files will be modified until you run Auto Remove Dead Space.</p>
-        </div>
-        """
-        
-        return preview_msg
-    
-    preview_clean_btn.click(
-        fn=preview_cleanup_changes,
+    # Keep the old auto clean button for backward compatibility
+    auto_clean_btn.click(
+        fn=confirm_full_cleanup,
         inputs=[clean_project_state, silence_threshold, min_silence_duration],
+        outputs=[cleanup_status, cleanup_results]
+    )
+    
+    # Handle the old preview button (now just shows analysis)
+    preview_clean_btn.click(
+        fn=analyze_project_audio_quality,
+        inputs=[clean_project_state],
         outputs=[cleanup_results]
     )
     
