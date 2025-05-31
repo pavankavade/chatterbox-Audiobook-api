@@ -1,0 +1,23 @@
+{
+  "project_name": "dndBooktest2",
+  "project_type": "single_voice",
+  "creation_date": "1748562142.861106",
+  "text_content": "Created for my ongoing Dungeons & Dragons campaign The Isles of Etheria, this pendant represents one of the AI memory fragments scattered across the world. Long ago, a terraforming probe—guided by a personality modeled on Carl Sagan—crashed on this planet. Instead of generating a viable ecosystem, it accidentally populated the world with elves, orcs, dragons, and wizards pulled from humanity’s cultural archives. Now, the AI is fragmented, its power waning, and an apocalyptic force known as Bowie seeks to absorb the remaining pieces and wipe the slate clean.\n\nThese pendants glow faintly when near one another, hinting at their shared origin. They are both relics and keys—tied to the memories of the original AI and central to the party’s quest to restore balance before the human ark ship arrives. Each pendant is unique, but they fit together like pieces of a larger consciousness. My players are slowly discovering their significance, and I made this as an in-world item to reinforce that connection and mystery.\n\nLet me know if you'd like to see the others as they’re revealed in the campaign! No commissions, just passion for the world we're building.",
+  "chunks": [
+    "Created for my ongoing Dungeons & Dragons campaign The Isles of Etheria, this pendant represents one of the AI memory fragments scattered across the world.  Long ago, a terraforming probe—guided by a personality modeled on Carl Sagan—crashed on this planet.",
+    "Instead of generating a viable ecosystem, it accidentally populated the world with elves, orcs, dragons, and wizards pulled from humanity’s cultural archives.  Now, the AI is fragmented, its power waning, and an apocalyptic force known as Bowie seeks to absorb the remaining pieces and wipe the slate clean.",
+    "These pendants glow faintly when near one another, hinting at their shared origin.  They are both relics and keys—tied to the memories of the original AI and central to the party’s quest to restore balance before the human ark ship arrives.",
+    "Each pendant is unique, but they fit together like pieces of a larger consciousness.  My players are slowly discovering their significance, and I made this as an in-world item to reinforce that connection and mystery.",
+    "Let me know if you'd like to see the others as they’re revealed in the campaign!  No commissions, just passion for the world we're building."
+  ],
+  "voice_info": {
+    "voice_name": "Frank_-_slow",
+    "display_name": "Male",
+    "audio_file": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox\\speakers\\Frank_-_slow\\reference.wav",
+    "exaggeration": 0.45,
+    "cfg_weight": 0.25,
+    "temperature": 0.75
+  },
+  "sample_rate": 24000,
+  "version": "1.0"
+}

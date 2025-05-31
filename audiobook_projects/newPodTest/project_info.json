@@ -1,0 +1,155 @@
+{
+  "project_name": "newPodTest",
+  "total_chunks": 17,
+  "final_processing_mode": "GPU",
+  "voice_assignments": {
+    "af_sarah": "January",
+    "af_aoede": "Sarah",
+    "bm_lewis": "John-o",
+    "am_fenrir": "George"
+  },
+  "characters": [
+    "af_sarah",
+    "af_aoede",
+    "bm_lewis",
+    "am_fenrir"
+  ],
+  "chunks": [
+    {
+      "chunk_num": 1,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Today is March 25th, 2025.  Welcome to the AI Rundown, where we don't do deep dives.  We just look a...",
+      "word_count": 24
+    },
+    {
+      "chunk_num": 2,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "My name is Sky, and let's start exploring.",
+      "word_count": 8
+    },
+    {
+      "chunk_num": 3,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Today we're looking at DeepSeek's latest model shaking up the AI world, lessons from a developer who...",
+      "word_count": 36
+    },
+    {
+      "chunk_num": 4,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "I can't wait to get started!",
+      "word_count": 6
+    },
+    {
+      "chunk_num": 5,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Joining me today is Sarah, our skeptical eye on all things AI benchmarks, Phil, our resident optimis...",
+      "word_count": 33
+    },
+    {
+      "chunk_num": 6,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Let's dive into the biggest news, DeepSeek just released what they're calling a \"minor update\" to th...",
+      "word_count": 27
+    },
+    {
+      "chunk_num": 7,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Sarah, what's your take?",
+      "word_count": 4
+    },
+    {
+      "chunk_num": 8,
+      "voice_name": "Sarah",
+      "character_name": "af_aoede",
+      "voice_display": "Female",
+      "text": "I'm stunned by these numbers.  What DeepSeek's calling a \"minor update\" shows massive improvements, ...",
+      "word_count": 24
+    },
+    {
+      "chunk_num": 9,
+      "voice_name": "Sarah",
+      "character_name": "af_aoede",
+      "voice_display": "Female",
+      "text": "3, and AIME scores jumping by nearly 20 points.  This is the first time an open-weights model has ta...",
+      "word_count": 28
+    },
+    {
+      "chunk_num": 10,
+      "voice_name": "John-o",
+      "character_name": "bm_lewis",
+      "voice_display": "Male",
+      "text": "That's exactly what I've been waiting to hear, Sarah!  An open-source model that can outperform the ...",
+      "word_count": 23
+    },
+    {
+      "chunk_num": 11,
+      "voice_name": "John-o",
+      "character_name": "bm_lewis",
+      "voice_display": "Male",
+      "text": "When you consider DeepSeek is offering this at a fraction of the cost of models like GPT-4o, this co...",
+      "word_count": 30
+    },
+    {
+      "chunk_num": 12,
+      "voice_name": "George",
+      "character_name": "am_fenrir",
+      "voice_display": "male",
+      "text": "I have to jump in here, Phil.  What's even more exciting than the performance are the architectural ...",
+      "word_count": 21
+    },
+    {
+      "chunk_num": 13,
+      "voice_name": "George",
+      "character_name": "am_fenrir",
+      "voice_display": "male",
+      "text": "They're using a mixture of experts approach, multi-head latent attention, a loss-free loading strate...",
+      "word_count": 30
+    },
+    {
+      "chunk_num": 14,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "Storm, you're making me dizzy with the technical details!  But I love it.  The performance numbers a...",
+      "word_count": 23
+    },
+    {
+      "chunk_num": 15,
+      "voice_name": "January",
+      "character_name": "af_sarah",
+      "voice_display": "Female",
+      "text": "It's scoring well on math problems, reasoning tasks, and coding challenges.",
+      "word_count": 11
+    },
+    {
+      "chunk_num": 16,
+      "voice_name": "Sarah",
+      "character_name": "af_aoede",
+      "voice_display": "Female",
+      "text": "Hold on, everyone.  I think we need to pump the brakes a little.  I'm still cautious about how these...",
+      "word_count": 25
+    },
+    {
+      "chunk_num": 17,
+      "voice_name": "Sarah",
+      "character_name": "af_aoede",
+      "voice_display": "Female",
+      "text": "We all know companies can optimize specifically for benchmarks.  I want to see more third-party test...",
+      "word_count": 23
+    }
+  ]
+}

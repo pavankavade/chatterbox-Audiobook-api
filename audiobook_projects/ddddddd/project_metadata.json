@@ -1,0 +1,24 @@
+{
+  "project_name": "ddddddd",
+  "project_type": "single_voice",
+  "creation_date": "1748702499.8285005",
+  "text_content": "Symphony Creative Studio is an AI-powered video generation tool that allows marketers to create TikTok-style videos in minutes. It leverages AI to generate video clips based on product descriptions, URLs, or existing assets. The tool can even pull images directly from a web to build videos that align with popular trends. Symphony Creative Studio is part of TikTok's Symphony creative AI suite.\n\nFollow Up 1 - We met with the TikTok team on 2-28-25. They informed us of the use of third-party models and first-party models. We're waiting to find out if the third-party models are self-hosted or via API. They're also going to be getting us more information on how audit logs are kept between user levels.  You can see our full notes here.\n\nFollow Up 2 - We met again with the TikTok team on 3-25-25, though the meeting largely mirrored our previous discussion. The notable difference was their disclosure that the models in question are classified as proprietary information. We clarified that progression on getting this tool approved would be easier if we had this data, and expressed our willingness to execute any necessary non-disclosure agreements to secure access. Following the meeting, we sent a detailed email specifying our exact informational requirements,  and are waiting to hear back on next steps",
+  "chunks": [
+    "Symphony Creative Studio is an AI-powered video generation tool that allows marketers to create TikTok-style videos in minutes.  It leverages AI to generate video clips based on product descriptions, URLs, or existing assets.",
+    "The tool can even pull images directly from a web to build videos that align with popular trends.  Symphony Creative Studio is part of TikTok's Symphony creative AI suite.\n\n Follow Up 1 - We met with the TikTok team on 2-28-25.",
+    "They informed us of the use of third-party models and first-party models.  We're waiting to find out if the third-party models are self-hosted or via API.  They're also going to be getting us more information on how audit logs are kept between user levels.",
+    "You can see our full notes here.\n\n Follow Up 2 - We met again with the TikTok team on 3-25-25, though the meeting largely mirrored our previous discussion.  The notable difference was their disclosure that the models in question are classified as proprietary information.",
+    "We clarified that progression on getting this tool approved would be easier if we had this data, and expressed our willingness to execute any necessary non-disclosure agreements to secure access.",
+    "Following the meeting, we sent a detailed email specifying our exact informational requirements,  and are waiting to hear back on next steps"
+  ],
+  "voice_info": {
+    "voice_name": "Will-W",
+    "display_name": "Male",
+    "audio_file": "H:\\CurserProjects\\chatterbox-Audiobook\\speakers\\Will-W\\reference.wav",
+    "exaggeration": 0.5,
+    "cfg_weight": 0.5,
+    "temperature": 0.8
+  },
+  "sample_rate": 24000,
+  "version": "1.0"
+}

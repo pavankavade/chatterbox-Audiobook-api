@@ -1,0 +1,9 @@
+{
+  "display_name": "Male",
+  "description": "American - Gunslinger",
+  "audio_file": "reference.wav",
+  "exaggeration": 0.45,
+  "cfg_weight": 0.25,
+  "temperature": 0.75,
+  "created_date": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox"
+}

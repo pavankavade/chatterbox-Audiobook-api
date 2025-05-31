@@ -1,0 +1,75 @@
+{
+  "project_name": "ffffff",
+  "total_chunks": 7,
+  "final_processing_mode": "GPU",
+  "voice_assignments": {
+    "af_sarah": "Sarah",
+    "p4h": "Nigel",
+    "p1h": "Cooper",
+    "p6": "Will-W"
+  },
+  "characters": [
+    "af_sarah",
+    "p4h",
+    "p1h",
+    "p6"
+  ],
+  "chunks": [
+    {
+      "chunk_num": 1,
+      "voice_name": "Sarah",
+      "character_name": "af_sarah",
+      "voice_display": "Sarah",
+      "text": "Today is March 25th, 2025.  Welcome to the AI Rundown, where we don't do deep dives.  We just look a...",
+      "word_count": 24
+    },
+    {
+      "chunk_num": 2,
+      "voice_name": "Sarah",
+      "character_name": "af_sarah",
+      "voice_display": "Sarah",
+      "text": "My name is Sky, and let's start exploring.",
+      "word_count": 8
+    },
+    {
+      "chunk_num": 3,
+      "voice_name": "Nigel",
+      "character_name": "p4h",
+      "voice_display": "Nigel",
+      "text": "Today we're looking at DeepSeek's latest model shaking up the AI world, lessons from a developer who...",
+      "word_count": 36
+    },
+    {
+      "chunk_num": 4,
+      "voice_name": "Cooper",
+      "character_name": "p1h",
+      "voice_display": "Cooper",
+      "text": "I can't wait to get started!",
+      "word_count": 6
+    },
+    {
+      "chunk_num": 5,
+      "voice_name": "Cooper",
+      "character_name": "p1h",
+      "voice_display": "Cooper",
+      "text": "Joining me today is Sarah, our skeptical eye on all things AI benchmarks, Phil, our resident optimis...",
+      "word_count": 33
+    },
+    {
+      "chunk_num": 6,
+      "voice_name": "Will-W",
+      "character_name": "p6",
+      "voice_display": "Will-W",
+      "text": "Let's dive into the biggest news, DeepSeek just released what they're calling a \"minor update\" to th...",
+      "word_count": 27
+    },
+    {
+      "chunk_num": 7,
+      "voice_name": "Will-W",
+      "character_name": "p6",
+      "voice_display": "Will-W",
+      "text": "Sarah, what's your take?",
+      "word_count": 4
+    }
+  ]
+}

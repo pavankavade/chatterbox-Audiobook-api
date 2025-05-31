@@ -29,6 +29,7 @@ call venv\Scripts\activate.bat
 echo.
 echo Starting Chatterbox TTS Audiobook Edition...
 echo ✨ Features: Voice Library, Character Management, Audiobook Tools
+echo 🧹 Audio Cleaning Available in "Clean Samples" Tab
 echo This may take a moment to load the models...
 echo.
 echo Current directory: %CD%
@@ -45,4 +46,5 @@ deactivate
 echo.
 echo Thanks for using Chatterbox TTS Audiobook Edition! 🎧✨
 echo Your voice profiles are saved in the voice_library folder.
+echo Audio cleaning features are in the "Clean Samples" tab!
 pause 

@@ -1,0 +1,9 @@
+{
+  "display_name": "Male",
+  "description": "Dumb",
+  "audio_file": "reference.wav",
+  "exaggeration": 0.45,
+  "cfg_weight": 0.2,
+  "temperature": 1.1,
+  "created_date": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox"
+}

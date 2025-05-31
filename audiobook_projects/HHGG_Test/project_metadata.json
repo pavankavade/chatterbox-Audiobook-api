@@ -1,0 +1,31 @@
+{
+  "project_name": "HHGG_Test",
+  "project_type": "single_voice",
+  "creation_date": "1748612310.7116742",
+  "text_content": "The Hitch Hiker's Guide to the Galaxy .\n By Douglas Adams, read by Will Wheaton. \n \nfor Jonny Brock and Clare Gorst\nand all other Arlingtoniansfor tea, sympathy, and a sofa.\n\n\n\nFar out in the uncharted backwaters of the unfashionable end of\nthe western spiral arm of the Galaxy lies a small unregarded\nyellow sun.\n\nOrbiting this at a distance of roughly ninety two million miles\nis an utterly insignificant little blue green planet whose ape \ndescended life forms are so amazingly primitive that they still\nthink digital watches are a pretty neat idea.\n\nThis planet has or rather had a problem, which was this: most\nof the people on it were unhappy for pretty much of the time.\nMany solutions were suggested for this problem, but most of these\nwere largely concerned with the movements of small green pieces\nof paper, which is odd because on the whole it wasn't the small\ngreen pieces of paper that were unhappy.\n\nAnd so the problem remained; lots of the people were mean, and\nmost of them were miserable, even the ones with digital watches.\n\nMany were increasingly of the opinion that they'd all made a big\nmistake in coming down from the trees in the first place. And\nsome said that even the trees had been a bad move, and that no\none should ever have left the oceans.\n\nAnd then, one Thursday, nearly two thousand years after one man\nhad been nailed to a tree for saying how great it would be to be\nnice to people for a change, one girl sitting on her own in a\nsmall cafe in Rickmansworth suddenly realized what it was that\nhad been going wrong all this time, and she finally knew how the\nworld could be made a good and happy place. This time it was\nright, it would work, and no one would have to get nailed to\nanything.\n\nSadly, however, before she could get to a phone to tell anyone \nabout it, a terribly stupid catastrophe occurred, and the idea\nwas lost forever.\n\nThis is not her story.\n\nBut it is the story of that terrible stupid catastrophe and some\nof its consequences.\n\nIt is also the story of a book, a book called The Hitch Hiker's\nGuide to the Galaxy not an Earth book, never published on\nEarth, and until the terrible catastrophe occurred, never seen or\nheard of by any Earthman.\n\nNevertheless, a wholly remarkable book.\n\nin fact it was probably the most remarkable book ever to come out\nof the great publishing houses of Ursa Minor of which no\nEarthman had ever heard either.\n\nNot only is it a wholly remarkable book, it is also a highly\nsuccessful one more popular than the Celestial Home Care\nOmnibus, better selling than Fifty More Things to do in Zero\nGravity, and more controversial than Oolon Colluphid's trilogy of\nphilosophical blockbusters Where God Went Wrong, Some More of\nGod's Greatest Mistakes and Who is this God Person Anyway?\n",
+  "chunks": [
+    "The Hitch Hiker's Guide to the Galaxy.\n  By Douglas Adams, read by Will Wheaton. \n \n for Jonny Brock and Clare Gorst\nand all other Arlingtoniansfor tea, sympathy, and a sofa.",
+    "Far out in the uncharted backwaters of the unfashionable end of\nthe western spiral arm of the Galaxy lies a small unregarded\nyellow sun.",
+    "Orbiting this at a distance of roughly ninety two million miles\nis an utterly insignificant little blue green planet whose ape \ndescended life forms are so amazingly primitive that they still\nthink digital watches are a pretty neat idea.",
+    "This planet has or rather had a problem, which was this: most\nof the people on it were unhappy for pretty much of the time.",
+    "Many solutions were suggested for this problem, but most of these\nwere largely concerned with the movements of small green pieces\nof paper, which is odd because on the whole it wasn't the small\ngreen pieces of paper that were unhappy.",
+    "And so the problem remained; lots of the people were mean, and\nmost of them were miserable, even the ones with digital watches.\n\n Many were increasingly of the opinion that they'd all made a big\nmistake in coming down from the trees in the first place.",
+    "And\nsome said that even the trees had been a bad move, and that no\none should ever have left the oceans.",
+    "And then, one Thursday, nearly two thousand years after one man\nhad been nailed to a tree for saying how great it would be to be\nnice to people for a change, one girl sitting on her own in a\nsmall cafe in Rickmansworth suddenly realized what it was that\nhad been going wrong all this time, and she finally knew how the\nworld could be made a good and happy place.",
+    "This time it was\nright, it would work, and no one would have to get nailed to\nanything.\n\n Sadly, however, before she could get to a phone to tell anyone \nabout it, a terribly stupid catastrophe occurred, and the idea\nwas lost forever.\n\n This is not her story.",
+    "But it is the story of that terrible stupid catastrophe and some\nof its consequences.",
+    "It is also the story of a book, a book called The Hitch Hiker's\nGuide to the Galaxy not an Earth book, never published on\nEarth, and until the terrible catastrophe occurred, never seen or\nheard of by any Earthman.\n\n Nevertheless, a wholly remarkable book.",
+    "in fact it was probably the most remarkable book ever to come out\nof the great publishing houses of Ursa Minor of which no\nEarthman had ever heard either.",
+    "Not only is it a wholly remarkable book, it is also a highly\nsuccessful one more popular than the Celestial Home Care\nOmnibus, better selling than Fifty More Things to do in Zero\nGravity, and more controversial than Oolon Colluphid's trilogy of\nphilosophical blockbusters Where God Went Wrong, Some More of\nGod's Greatest Mistakes and Who is this God Person Anyway?"
+  ],
+  "voice_info": {
+    "voice_name": "Will-W",
+    "display_name": "Male",
+    "audio_file": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox\\speakers\\Will-W\\reference.wav",
+    "exaggeration": 0.5,
+    "cfg_weight": 0.5,
+    "temperature": 0.8
+  },
+  "sample_rate": 24000,
+  "version": "1.0"
+}

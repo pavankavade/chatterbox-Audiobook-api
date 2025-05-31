@@ -1,0 +1,137 @@
+{
+  "project_name": "posdeee",
+  "total_chunks": 15,
+  "final_processing_mode": "GPU",
+  "voice_assignments": {
+    "Phil": "Nigel",
+    "John": "George",
+    "Susan": "Sarah"
+  },
+  "characters": [
+    "Phil",
+    "John",
+    "Susan"
+  ],
+  "chunks": [
+    {
+      "chunk_num": 1,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "Today is Saturday, May 31st, 2025.  Welcome to the AI Rundown, where we don't do deep dives.  We jus...",
+      "word_count": 25
+    },
+    {
+      "chunk_num": 2,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "My name is Phil, and let's start exploring.",
+      "word_count": 8
+    },
+    {
+      "chunk_num": 3,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "This week we're covering Anthropic's Claude getting a voice, OpenAI's ambitious plans for ambient co...",
+      "word_count": 32
+    },
+    {
+      "chunk_num": 4,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "I'm joined today by Susan, our resident skeptic who keeps us grounded in reality, and John, our tech...",
+      "word_count": 32
+    },
+    {
+      "chunk_num": 5,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "Let's kick things off with the biggest story this week.  Anthropic just launched voice mode for Clau...",
+      "word_count": 28
+    },
+    {
+      "chunk_num": 6,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "Not at all, Phil.  What makes Claude's voice mode interesting is the Google Workspace integration.",
+      "word_count": 15
+    },
+    {
+      "chunk_num": 7,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "You can actually have Claude audibly tell you about your calendar, read your emails, and access your...",
+      "word_count": 19
+    },
+    {
+      "chunk_num": 8,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "It's powered by their Claude Sonnet 4 model and uses ElevenLabs for text-to-speech generation.",
+      "word_count": 14
+    },
+    {
+      "chunk_num": 9,
+      "voice_name": "Sarah",
+      "character_name": "Susan",
+      "voice_display": "Sarah",
+      "text": "Hold on though - we're talking about giving an AI assistant access to our most sensitive personal an...",
+      "word_count": 28
+    },
+    {
+      "chunk_num": 10,
+      "voice_name": "Sarah",
+      "character_name": "Susan",
+      "voice_display": "Sarah",
+      "text": "What happens when there's a security breach or the AI starts hallucinating about our private informa...",
+      "word_count": 16
+    },
+    {
+      "chunk_num": 11,
+      "voice_name": "Nigel",
+      "character_name": "Phil",
+      "voice_display": "Nigel",
+      "text": "That's a fair concern, Susan.  John, what are the usage limits looking like for this rollout?",
+      "word_count": 16
+    },
+    {
+      "chunk_num": 12,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "Free users get about 20 to 30 voice messages per day, while paid subscribers get significantly highe...",
+      "word_count": 18
+    },
+    {
+      "chunk_num": 13,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "The feature is rolling out in English only for now across iOS and Android apps.",
+      "word_count": 15
+    },
+    {
+      "chunk_num": 14,
+      "voice_name": "George",
+      "character_name": "John",
+      "voice_display": "George",
+      "text": "What's technically interesting is how smoothly you can switch between text and voice input during a ...",
+      "word_count": 17
+    },
+    {
+      "chunk_num": 15,
+      "voice_name": "Sarah",
+      "character_name": "Susan",
+      "voice_display": "Sarah",
+      "text": "And let me guess - this is just the beginning of Anthropic trying to catch up to ChatGPT's voice fea...",
+      "word_count": 27
+    }
+  ]
+}

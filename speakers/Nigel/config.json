@@ -1,0 +1,9 @@
+{
+  "display_name": "Male",
+  "description": "British ",
+  "audio_file": "reference.wav",
+  "exaggeration": 0.6,
+  "cfg_weight": 0.2,
+  "temperature": 0.9,
+  "created_date": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox"
+}

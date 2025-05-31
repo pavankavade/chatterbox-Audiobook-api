@@ -1,0 +1,21 @@
+{
+  "project_name": "spintst2",
+  "project_type": "single_voice",
+  "creation_date": "1748653646.8065093",
+  "text_content": "spin State,\n\nby Chris Moriarty,\n\nnarrated by scott brick,\n\nThey cold shipped her out, flash frozen, body still bruised from last minute upgrades.\n\nLater she remembered only pieces of the raid. The touch of a hand. The crack of rifle fire. A face flashing bright as a fish’s rise in dark water. And what she did remember she couldn’t talk about, or the psychtechs would know she’d been hacking her own memory.\n\nBut that was later. After the court martial. After jump fade and the rehab tanks had stolen it from her. Before that the memory was still crisp and clear and unedited. Still hers.\n\nAfter all, she’d been there.\n",
+  "chunks": [
+    "spin State,\n\nby Chris Moriarty,\n\nnarrated by scott brick,\n\nThey cold shipped her out, flash frozen, body still bruised from last minute upgrades.\n\n Later she remembered only pieces of the raid.  The touch of a hand.  The crack of rifle fire.",
+    "A face flashing bright as a fish’s rise in dark water.  And what she did remember she couldn’t talk about, or the psychtechs would know she’d been hacking her own memory.\n\n But that was later.  After the court martial.",
+    "After jump fade and the rehab tanks had stolen it from her.  Before that the memory was still crisp and clear and unedited.  Still hers.\n\n After all, she’d been there."
+  ],
+  "voice_info": {
+    "voice_name": "Scott",
+    "display_name": "Male",
+    "audio_file": "H:\\CurserProjects\\chatterbox\\chatterbox-audiobook\\chatterbox\\speakers\\Scott\\reference.wav",
+    "exaggeration": 0.4,
+    "cfg_weight": 0.2,
+    "temperature": 0.8
+  },
+  "sample_rate": 24000,
+  "version": "1.0"
+}

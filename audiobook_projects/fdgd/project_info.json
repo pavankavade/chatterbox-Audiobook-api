@@ -1,0 +1,81 @@
+{
+  "project_name": "fdgd",
+  "total_chunks": 8,
+  "final_processing_mode": "GPU",
+  "voice_assignments": {
+    "sarah": "Sarah",
+    "frank": "Rose",
+    "rose": "Nigel"
+  },
+  "characters": [
+    "sarah",
+    "frank",
+    "rose"
+  ],
+  "chunks": [
+    {
+      "chunk_num": 1,
+      "voice_name": "Sarah",
+      "character_name": "sarah",
+      "voice_display": "Female",
+      "text": "sarah",
+      "word_count": 1
+    },
+    {
+      "chunk_num": 2,
+      "voice_name": "Sarah",
+      "character_name": "sarah",
+      "voice_display": "Female",
+      "text": "The ancient castle stood majestically on the hill.  Dark clouds gathered overhead as our hero approa...",
+      "word_count": 19
+    },
+    {
+      "chunk_num": 3,
+      "voice_name": "Rose",
+      "character_name": "frank",
+      "voice_display": "Female",
+      "text": "frank",
+      "word_count": 1
+    },
+    {
+      "chunk_num": 4,
+      "voice_name": "Rose",
+      "character_name": "frank",
+      "voice_display": "Female",
+      "text": "\"Who goes there? \" called the guard from his tower.  \"State your business at this late hour! \"",
+      "word_count": 18
+    },
+    {
+      "chunk_num": 5,
+      "voice_name": "Nigel",
+      "character_name": "rose",
+      "voice_display": "Male",
+      "text": "rose",
+      "word_count": 1
+    },
+    {
+      "chunk_num": 6,
+      "voice_name": "Nigel",
+      "character_name": "rose",
+      "voice_display": "Male",
+      "text": "\"I am Sir Galahad, seeking audience with the king.  I bring urgent news from the northern kingdoms. ...",
+      "word_count": 18
+    },
+    {
+      "chunk_num": 7,
+      "voice_name": "Rose",
+      "character_name": "frank",
+      "voice_display": "Female",
+      "text": "frank",
+      "word_count": 1
+    },
+    {
+      "chunk_num": 8,
+      "voice_name": "Rose",
+      "character_name": "frank",
+      "voice_display": "Female",
+      "text": "The guard studied him carefully before slowly opening the heavy gates.",
+      "word_count": 11
+    }
+  ]
+}
