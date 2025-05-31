@@ -1714,17 +1714,15 @@ def force_refresh_all_project_dropdowns():
         # Clear any potential caches and get fresh project list
         projects = get_existing_projects()
         choices = get_project_choices()
-        # Return the same choices for all three dropdowns that might need updating
+        # Return the same choices for the two remaining dropdowns
         return (
             gr.Dropdown(choices=choices, value=None),
-            gr.Dropdown(choices=choices, value=None), 
             gr.Dropdown(choices=choices, value=None)
         )
     except Exception as e:
         print(f"Error refreshing project dropdowns: {str(e)}")
         error_choices = [("Error loading projects", None)]
         return (
-            gr.Dropdown(choices=error_choices, value=None),
             gr.Dropdown(choices=error_choices, value=None),
             gr.Dropdown(choices=error_choices, value=None)
         )
@@ -3817,137 +3815,20 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             """)
 
         # NEW: Regenerate Sample Tab with Sub-tabs
-        with gr.TabItem("🎬 Production Studio", id="production_studio"):
+        with gr.TabItem("🔄 Regenerate Sample", id="regenerate"):
+            gr.HTML("""
+            <div class="audiobook-header">
+                <h2>🔄 Project Editing Studio</h2>
+                <p>Choose your editing mode: Listen & Edit for continuous playback or Chunk by Chunk for precise control</p>
+            </div>
+            """)
+            
             with gr.Tabs():
-                # NEW: Clean Samples Sub-tab (first tab)
-                with gr.TabItem("🧹 Clean Samples", id="clean_samples"):
+                # NEW: Listen & Edit Sub-tab
+                with gr.TabItem("🎵 Listen & Edit", id="listen_edit"):
                     gr.HTML("""
                     <div class="audiobook-header">
-                        <h3>🧹 Audio Cleanup & Quality Control</h3>
-                        <p>Automatically detect and remove dead space, silence, and audio artifacts from your projects</p>
-                    </div>
-                    """)
-                    
-                    with gr.Row():
-                        with gr.Column(scale=1):
-                            # Project Selection for Clean Samples
-                            with gr.Group():
-                                gr.HTML("<h4>📁 Project Selection</h4>")
-                                
-                                clean_project_dropdown = gr.Dropdown(
-                                    choices=get_project_choices(),
-                                    label="Select Project",
-                                    value=None,
-                                    info="Choose project to analyze and clean"
-                                )
-                                
-                                with gr.Row():
-                                    load_clean_project_btn = gr.Button(
-                                        "📂 Load Project",
-                                        variant="secondary",
-                                        size="lg"
-                                    )
-                                    refresh_clean_projects_btn = gr.Button(
-                                        "🔄 Refresh",
-                                        size="sm"
-                                    )
-                                
-                                clean_project_status = gr.HTML(
-                                    "<div class='audiobook-status'>📁 Select a project to start cleaning</div>"
-                                )
-                            
-                            # Audio Quality Analysis
-                            with gr.Group():
-                                gr.HTML("<h4>📊 Audio Quality Analysis</h4>")
-                                
-                                analyze_audio_btn = gr.Button(
-                                    "🔍 Analyze Audio Quality",
-                                    variant="secondary",
-                                    size="lg",
-                                    interactive=False
-                                )
-                                
-                                audio_analysis_results = gr.HTML(
-                                    "<div class='voice-status'>📊 Load a project to see analysis</div>"
-                                )
-                        
-                        with gr.Column(scale=2):
-                            # Auto Remove Dead Space Section
-                            with gr.Group():
-                                gr.HTML("<h4>🧹 Auto Remove Dead Space</h4>")
-                                
-                                with gr.Row():
-                                    silence_threshold = gr.Slider(
-                                        minimum=-80,
-                                        maximum=-20,
-                                        value=-50,
-                                        step=5,
-                                        label="Silence Threshold (dB)",
-                                        info="Audio below this level is considered silence"
-                                    )
-                                    min_silence_duration = gr.Slider(
-                                        minimum=0.1,
-                                        maximum=2.0,
-                                        value=0.5,
-                                        step=0.1,
-                                        label="Min Silence Duration (s)",
-                                        info="Minimum silence length to remove"
-                                    )
-                                
-                                with gr.Row():
-                                    auto_clean_btn = gr.Button(
-                                        "🧹 Auto Remove Dead Space",
-                                        variant="primary",
-                                        size="lg",
-                                        interactive=False
-                                    )
-                                    preview_clean_btn = gr.Button(
-                                        "👁️ Preview Changes",
-                                        variant="secondary",
-                                        size="lg",
-                                        interactive=False
-                                    )
-                                
-                                cleanup_status = gr.HTML(
-                                    "<div class='audiobook-status'>🧹 Load a project to start automatic cleanup</div>"
-                                )
-                                
-                                cleanup_results = gr.HTML(
-                                    "<div class='voice-status'>📝 Cleanup results will appear here</div>"
-                                )
-                            
-                            # Add hidden state for clean samples
-                            clean_project_state = gr.State("")
-                    
-                    # Instructions for Clean Samples
-                    gr.HTML("""
-                    <div class="instruction-box">
-                        <h4>🧹 Audio Cleanup Workflow:</h4>
-                        <ol>
-                            <li><strong>Select Project:</strong> Choose a project to analyze and clean</li>
-                            <li><strong>Analyze Quality:</strong> Run audio quality analysis to identify issues</li>
-                            <li><strong>Preview Changes:</strong> See what will be cleaned before applying</li>
-                            <li><strong>Auto Clean:</strong> Automatically remove dead space and silence</li>
-                            <li><strong>Review Results:</strong> Check the cleanup summary and any errors</li>
-                        </ol>
-                        <p><strong>🔧 Features:</strong></p>
-                        <ul>
-                            <li><strong>🔍 Smart Detection:</strong> Identifies silence, artifacts, and problematic audio</li>
-                            <li><strong>💾 Automatic Backup:</strong> Creates backups before any changes</li>
-                            <li><strong>⚙️ Configurable:</strong> Adjust thresholds for your specific needs</li>
-                            <li><strong>📊 Detailed Reports:</strong> See exactly what was cleaned and why</li>
-                        </ul>
-                        <p><strong>⚠️ Note:</strong> This feature requires librosa and soundfile libraries for audio processing.</p>
-                    </div>
-                    """)
-                # End of Clean Samples TabItem
-
-                # New Empty Listen & Edit Tab
-                with gr.TabItem("🎧 Listen & Edit", id="listen_edit_prod"): 
-                    # REPLACING PLACEHOLDER WITH ACTUAL CONTENT
-                    gr.HTML("""
-                    <div class="audiobook-header">
-                        <h3>🎧 Continuous Playback Editor</h3>
+                        <h3>🎵 Continuous Playback Editor</h3>
                         <p>Listen to your entire audiobook and regenerate chunks in real-time</p>
                     </div>
                     """)
@@ -3967,7 +3848,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 
                                 with gr.Row():
                                     load_listen_project_btn = gr.Button(
-                                        "🎧 Load for Listen & Edit", # Changed button text for clarity
+                                        "🎵 Load for Listen & Edit",
                                         variant="primary",
                                         size="lg"
                                     )
@@ -4028,7 +3909,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                     )
                                 )
                                 
-                                listen_edit_status = gr.HTML( # This was likely a typo and should be listen_project_status or a new one
+                                listen_edit_status = gr.HTML(
                                     "<div class='audiobook-status'>📁 Load a project to start continuous editing</div>"
                                 )
                             
@@ -4056,7 +3937,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                     # Instructions for Listen & Edit
                     gr.HTML("""
                     <div class="instruction-box">
-                        <h4>🎧 Listen & Edit Workflow:</h4>
+                        <h4>🎵 Listen & Edit Workflow:</h4>
                         <ol>
                             <li><strong>Load Project:</strong> Select and load a project for continuous editing</li>
                             <li><strong>Listen:</strong> Play the continuous audio and listen for issues</li>
@@ -4074,18 +3955,13 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                         </ul>
                     </div>
                     """)
-                    # Hidden states for Listen & Edit mode
-                    continuous_audio_data = gr.State(None)
-                    current_chunk_state = gr.State({})
-                    listen_edit_project_name = gr.State("")
-
-                # New Empty Batch Processing Tab
-                with gr.TabItem("🔁 Batch Processing", id="batch_processing_prod"):
-                    # REPLACING PLACEHOLDER WITH ACTUAL CONTENT
+                
+                # Chunk by Chunk Sub-tab (existing functionality)
+                with gr.TabItem("🔧 Chunk by Chunk", id="chunk_by_chunk"):
                     gr.HTML("""
                     <div class="audiobook-header">
-                        <h3>🔁 Batch Chunk Editor & Processor</h3>
-                        <p>Detailed chunk-by-chunk editing, regeneration, and trimming</p>
+                        <h3>🔧 Precision Chunk Editor</h3>
+                        <p>Detailed chunk-by-chunk editing with full control over individual segments</p>
                     </div>
                     """)
                     
@@ -4095,7 +3971,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                             with gr.Group():
                                 gr.HTML("<h4>📁 Project Selection</h4>")
                                 
-                                project_dropdown = gr.Dropdown( # This is for this specific sub-tab
+                                project_dropdown = gr.Dropdown(
                                     choices=get_project_choices(),
                                     label="Select Project",
                                     value=None,
@@ -4103,7 +3979,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 )
                                 
                                 with gr.Row():
-                                    load_project_btn = gr.Button( 
+                                    load_project_btn = gr.Button(
                                         "📂 Load Project Chunks",
                                         variant="secondary",
                                         size="lg"
@@ -4135,174 +4011,209 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                         value=1,
                                         minimum=1,
                                         step=1,
-                                        interactive=True,
-                                        info="Current page number"
+                                        precision=0,
+                                        info="Navigate to specific page"
                                     )
                                 
                                 with gr.Row():
-                                    prev_page_btn = gr.Button("⬅️ Previous Page", size="sm", interactive=False)
-                                    next_page_btn = gr.Button("➡️ Next Page", size="sm", interactive=False)
-                                    go_to_page_btn = gr.Button("🔄 Go to Page", size="sm")
-                                
-                                # Page info display
-                                page_info = gr.HTML("<div class='voice-status'>📄 Load a project to see pagination info</div>")
-                        
-                        with gr.Column(scale=2):
-                            # Project Information Display
-                            with gr.Group():
-                                gr.HTML("<h4>📋 Project Overview</h4>")
-                                
-                                # Project info summary
-                                project_info_summary = gr.HTML(
-                                    "<div class='voice-status'>📝 Load a project to see details</div>"
-                                )
-                                
-                                # Chunks container - this will be populated dynamically
-                                chunks_container = gr.HTML( 
-                                    "<div class='audiobook-status'>📚 Project chunks will appear here after loading</div>"
-                                )
-                                
-                                # Download Section - Simplified 
-                                with gr.Group():
-                                    gr.HTML("<h4>💾 Download Project</h4>")
-                                    
-                                    download_project_btn = gr.Button(
-                                        "📥 Download Project as Split MP3 Files",
-                                        variant="primary",
-                                        size="lg",
+                                    prev_page_btn = gr.Button(
+                                        "◀️ Previous",
+                                        size="sm",
                                         interactive=False
                                     )
+                                    next_page_btn = gr.Button(
+                                        "Next ▶️",
+                                        size="sm", 
+                                        interactive=False
+                                    )
+                                    go_to_page_btn = gr.Button(
+                                        "🎯 Go to Page",
+                                        size="sm"
+                                    )
+                                
+                                page_info = gr.HTML(
+                                    "<div class='voice-status'>📄 Load a project to see pagination</div>"
+                                )
+                        
+                        with gr.Column(scale=2):
+                            # Project Information Summary
+                            with gr.Group():
+                                gr.HTML("<h4>📋 Project Summary</h4>")
+                                
+                                project_info_summary = gr.HTML(
+                                    "<div class='audiobook-status'>📁 Select a project to view summary</div>"
+                                )
+                                
+                                with gr.Row():
+                                    download_project_btn = gr.Button(
+                                        "📁 Download Complete Project",
+                                        variant="primary",
+                                        size="lg",
+                                        interactive=False,
+                                        info="Combine all chunks into final audio files"
+                                    )
                                     
-                                    # Download status
                                     download_status = gr.HTML(
                                         "<div class='voice-status'>📁 Load a project first to enable download</div>"
                                     )
             
-                    # Dynamic chunk interface - created when project is loaded
-                    chunk_interfaces = [] 
-                    
-                    # Create interface for up to MAX_CHUNKS_FOR_INTERFACE chunks
-                    for i in range(MAX_CHUNKS_FOR_INTERFACE):
-                        with gr.Group(visible=False) as chunk_group:
-                            with gr.Row():
-                                with gr.Column(scale=1):
-                                    chunk_audio = gr.Audio(
-                                        label=f"Chunk {i+1} Audio",
-                                        interactive=True,  # Enable trimming
-                                        show_download_button=True,
-                                        show_share_button=False,
-                                        waveform_options=gr.WaveformOptions(
-                                            waveform_color="#01C6FF",
-                                            waveform_progress_color="#0066B4", 
-                                            trim_region_color="#FF6B6B",
-                                            show_recording_waveform=True,
-                                            skip_length=5,
-                                            sample_rate=24000
-                                        )
-                                    )
-                                    
-                                    save_original_trim_btn = gr.Button(
-                                        f"💾 Save Trimmed Chunk {i+1}",
-                                        variant="secondary",
-                                        size="sm",
-                                        visible=True 
-                                    )
-                                
-                                with gr.Column(scale=2):
-                                    chunk_text_input = gr.Textbox( 
-                                        label=f"Chunk {i+1} Text",
-                                        lines=3,
-                                        max_lines=6,
-                                        info="Edit this text and regenerate to create a new version"
-                                    )
-                                    
-                                    with gr.Row():
-                                        chunk_voice_info = gr.HTML(
-                                            "<div class='voice-status'>Voice info</div>"
-                                        )
-                                        
-                                        regenerate_chunk_btn = gr.Button(
-                                            f"🎵 Regenerate Chunk {i+1}",
-                                            variant="primary",
-                                            size="sm"
-                                        )
-                                    
-                                    regenerated_chunk_audio = gr.Audio(
-                                        label=f"Regenerated Chunk {i+1}",
-                                        visible=False,
-                                        interactive=True,  # Enable trimming
-                                        show_download_button=True,
-                                        show_share_button=False,
-                                        waveform_options=gr.WaveformOptions(
-                                            waveform_color="#FF6B6B",
-                                            waveform_progress_color="#FF4444",
-                                            trim_region_color="#FFB6C1",
-                                            show_recording_waveform=True,
-                                            skip_length=5,
-                                            sample_rate=24000
-                                        )
-                                    )
-                                    
-                                    with gr.Row(visible=False) as accept_decline_row:
-                                        accept_chunk_btn = gr.Button(
-                                            "✅ Accept Regeneration",
-                                            variant="primary",
-                                            size="sm"
-                                        )
-                                        decline_chunk_btn = gr.Button(
-                                            "❌ Decline Regeneration", 
-                                            variant="stop",
-                                            size="sm"
-                                        )
-                                        save_regen_trim_btn = gr.Button(
-                                            "💾 Save Trimmed Regeneration",
-                                            variant="secondary",
-                                            size="sm"
-                                        )
-                                    
-                                    chunk_status = gr.HTML(
-                                        "<div class='voice-status'>Ready to regenerate</div>"
-                                    )
-                        
-                        chunk_interfaces.append({
-                            'group': chunk_group,
-                            'audio': chunk_audio,
-                            'text': chunk_text_input, 
-                            'voice_info': chunk_voice_info,
-                            'button': regenerate_chunk_btn,
-                            'regenerated_audio': regenerated_chunk_audio,
-                            'accept_decline_row': accept_decline_row,
-                            'accept_btn': accept_chunk_btn,
-                            'decline_btn': decline_chunk_btn,
-                            'save_original_trim_btn': save_original_trim_btn,
-                            'save_regen_trim_btn': save_regen_trim_btn,
-                            'status': chunk_status,
-                            'chunk_num': i + 1 
-                        })
-                    
-                    gr.HTML("""
-                    <div class="instruction-box">
-                        <h4>📋 How to Use Batch Chunk Processing:</h4>
-                        <ol>
-                            <li><strong>Select Project:</strong> Choose from your existing audiobook projects</li>
-                            <li><strong>Load Project:</strong> View all audio chunks with their original text</li>
-                            <li><strong>Review & Trim:</strong> Listen to each chunk and trim if needed using the waveform controls</li>
-                            <li><strong>Save Trimmed Audio:</strong> Click "💾 Save Trimmed Chunk" to save your trimmed version</li>
-                            <li><strong>Edit & Regenerate:</strong> Modify text if needed and regenerate individual chunks</li>
-                            <li><strong>Trim Regenerated:</strong> Use trim controls on regenerated audio and save with "💾 Save Trimmed Regeneration"</li>
-                            <li><strong>Accept/Decline:</strong> Accept regenerated chunks or decline to keep originals</li>
-                        </ol>
-                        <p><strong>⚠️ Note:</strong> Gradio\'s visual trimming is just for selection - you must click \"Save Trimmed\" to actually apply the changes to the downloadable file!</p>
-                        <p><strong>💡 Note:</strong> Only projects created with metadata support can be fully regenerated. Legacy projects will show limited information.</p>
-                    </div>
-                    """)
+            # Dynamic chunk interface - created when project is loaded
+            chunk_interfaces = []
             
-                    current_project_chunks = gr.State([]) 
-                    current_project_name = gr.State("")   
-                    current_page_state = gr.State(1)    
-                    total_pages_state = gr.State(1)     
-
-            # End of Production Studio Tabs
+            # Create interface for up to MAX_CHUNKS_FOR_INTERFACE chunks
+            for i in range(MAX_CHUNKS_FOR_INTERFACE):
+                with gr.Group(visible=False) as chunk_group:
+                    with gr.Row():
+                        with gr.Column(scale=1):
+                            chunk_audio = gr.Audio(
+                                label=f"Chunk {i+1} Audio",
+                                interactive=True,  # Enable trimming
+                                show_download_button=True,
+                                show_share_button=False,
+                                waveform_options=gr.WaveformOptions(
+                                    waveform_color="#01C6FF",
+                                    waveform_progress_color="#0066B4", 
+                                    trim_region_color="#FF6B6B",
+                                    show_recording_waveform=True,
+                                    skip_length=5,
+                                    sample_rate=24000
+                                )
+                            )
+                            
+                            # Add trim/save button for original audio
+                            save_original_trim_btn = gr.Button(
+                                f"💾 Save Trimmed Chunk {i+1}",
+                                variant="secondary",
+                                size="sm",
+                                visible=True
+                            )
+                        
+                        with gr.Column(scale=2):
+                            chunk_text = gr.Textbox(
+                                label=f"Chunk {i+1} Text",
+                                lines=3,
+                                max_lines=6,
+                                info="Edit this text and regenerate to create a new version"
+                            )
+                            
+                            with gr.Row():
+                                chunk_voice_info = gr.HTML(
+                                    "<div class='voice-status'>Voice info</div>"
+                                )
+                                
+                                regenerate_chunk_btn = gr.Button(
+                                    f"🎵 Regenerate Chunk {i+1}",
+                                    variant="primary",
+                                    size="sm"
+                                )
+                            
+                            regenerated_chunk_audio = gr.Audio(
+                                label=f"Regenerated Chunk {i+1}",
+                                visible=False,
+                                interactive=True,  # Enable trimming
+                                show_download_button=True,
+                                show_share_button=False,
+                                waveform_options=gr.WaveformOptions(
+                                    waveform_color="#FF6B6B",
+                                    waveform_progress_color="#FF4444",
+                                    trim_region_color="#FFB6C1",
+                                    show_recording_waveform=True,
+                                    skip_length=5,
+                                    sample_rate=24000
+                                )
+                            )
+                            
+                            # Accept/Decline buttons for regenerated audio
+                            with gr.Row(visible=False) as accept_decline_row:
+                                accept_chunk_btn = gr.Button(
+                                    "✅ Accept Regeneration",
+                                    variant="primary",
+                                    size="sm"
+                                )
+                                decline_chunk_btn = gr.Button(
+                                    "❌ Decline Regeneration", 
+                                    variant="stop",
+                                    size="sm"
+                                )
+                                save_regen_trim_btn = gr.Button(
+                                    "💾 Save Trimmed Regeneration",
+                                    variant="secondary",
+                                    size="sm"
+                                )
+                            
+                            chunk_status = gr.HTML(
+                                "<div class='voice-status'>Ready to regenerate</div>"
+                            )
+                
+                chunk_interfaces.append({
+                    'group': chunk_group,
+                    'audio': chunk_audio,
+                    'text': chunk_text,
+                    'voice_info': chunk_voice_info,
+                    'button': regenerate_chunk_btn,
+                    'regenerated_audio': regenerated_chunk_audio,
+                    'accept_decline_row': accept_decline_row,
+                    'accept_btn': accept_chunk_btn,
+                    'decline_btn': decline_chunk_btn,
+                    'save_original_trim_btn': save_original_trim_btn,
+                    'save_regen_trim_btn': save_regen_trim_btn,
+                    'status': chunk_status,
+                    'chunk_num': i + 1
+                })
+            
+            # Instructions for Chunk by Chunk
+            gr.HTML("""
+            <div class="instruction-box">
+                <h4>📋 How to Use Chunk Regeneration & Audio Trimming:</h4>
+                <ol>
+                    <li><strong>Select Project:</strong> Choose from your existing audiobook projects</li>
+                    <li><strong>Load Project:</strong> View all audio chunks with their original text</li>
+                    <li><strong>Review & Trim:</strong> Listen to each chunk and trim if needed using the waveform controls</li>
+                    <li><strong>Save Trimmed Audio:</strong> Click "💾 Save Trimmed Chunk" to save your trimmed version</li>
+                    <li><strong>Edit & Regenerate:</strong> Modify text if needed and regenerate individual chunks</li>
+                    <li><strong>Trim Regenerated:</strong> Use trim controls on regenerated audio and save with "💾 Save Trimmed Regeneration"</li>
+                    <li><strong>Accept/Decline:</strong> Accept regenerated chunks or decline to keep originals</li>
+                </ol>
+                <h4>🎯 Audio Trimming Features:</h4>
+                <ul>
+                    <li><strong>🎵 Interactive Waveforms:</strong> Click and drag on the waveform to select audio segments</li>
+                    <li><strong>✂️ Visual Trimming:</strong> Drag the trim handles to select the desired audio portion</li>
+                    <li><strong>💾 Save Trimmed Audio:</strong> Click the save button to apply your trimming to the actual file</li>
+                    <li><strong>🔄 Real-time Preview:</strong> Play the selected portion before saving</li>
+                    <li><strong>📁 Auto-Backup:</strong> Original files are automatically backed up when trimming</li>
+                    <li><strong>⚠️ Important:</strong> Visual trimming selection must be saved using the "Save Trimmed" button</li>
+                </ul>
+                <h4>🎯 Traditional Features:</h4>
+                <ul>
+                    <li><strong>📄 Individual Control:</strong> Regenerate only the chunks you need to fix</li>
+                    <li><strong>🎭 Voice Preservation:</strong> Uses exact voice settings from original project</li>
+                    <li><strong>🎵 Side-by-side Comparison:</strong> Compare original and regenerated audio</li>
+                    <li><strong>✏️ Text Editing:</strong> Modify text before regenerating</li>
+                    <li><strong>🚀 Efficient Workflow:</strong> Fix specific issues without regenerating entire projects</li>
+                </ul>
+                <p><strong>💡 Trimming Workflow:</strong></p>
+                <ol>
+                    <li>🎧 Load a project and play the audio chunk</li>
+                    <li>✂️ Drag the trim region handles on the waveform to select your desired segment</li>
+                    <li>▶️ Play the selection to verify it sounds correct</li>
+                    <li>💾 Click "Save Trimmed Chunk" to apply the trimming to the actual file</li>
+                    <li>🔄 The download will now include your trimmed version</li>
+                </ol>
+                <p><strong>⚠️ Note:</strong> Gradio's visual trimming is just for selection - you must click "Save Trimmed" to actually apply the changes to the downloadable file!</p>
+                <p><strong>💡 Note:</strong> Only projects created with metadata support can be fully regenerated. Legacy projects will show limited information.</p>
+            </div>
+            """)
+            
+            # Hidden states for chunk management
+            current_project_chunks = gr.State([])
+            current_project_name = gr.State("")
+            current_page_state = gr.State(1)
+            total_pages_state = gr.State(1)
+            
+            # Hidden states for Listen & Edit mode
+            continuous_audio_data = gr.State(None)  # (audio_file_path, chunk_timings)
+            current_chunk_state = gr.State({})  # Current chunk info
+            listen_edit_project_name = gr.State("")
 
     # Load initial voice list and model
     demo.load(fn=load_model, inputs=[], outputs=model_state)
@@ -4462,7 +4373,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     ).then(
         fn=force_refresh_all_project_dropdowns,
         inputs=[],
-        outputs=[previous_project_dropdown, multi_previous_project_dropdown, project_dropdown]
+        outputs=[previous_project_dropdown, multi_previous_project_dropdown]
     )
     
     # Text analysis to find characters and populate dropdowns
@@ -4480,6 +4391,10 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         inputs=[multi_audiobook_text, voice_library_path_state, multi_project_name, voice_counts_state, character_names_state,
                char1_dropdown, char2_dropdown, char3_dropdown, char4_dropdown, char5_dropdown, char6_dropdown],
         outputs=[process_multi_btn, multi_audiobook_status, voice_assignments_state, multi_audiobook_output]
+    ).then(
+        fn=force_refresh_all_project_dropdowns,
+        inputs=[],
+        outputs=[previous_project_dropdown, multi_previous_project_dropdown]
     )
     
     # Multi-voice audiobook creation (using voice assignments)
@@ -4490,7 +4405,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     ).then(
         fn=force_refresh_all_project_dropdowns,
         inputs=[],
-        outputs=[previous_project_dropdown, multi_previous_project_dropdown, project_dropdown]
+        outputs=[previous_project_dropdown, multi_previous_project_dropdown]
     )
     
     # Refresh voices for multi-voice (updates dropdown choices)
@@ -5118,305 +5033,6 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=force_complete_project_refresh,
         inputs=[],
         outputs=project_dropdown
-    )
-
-    def auto_remove_dead_space(project_name: str, silence_threshold: float = -50.0, min_silence_duration: float = 0.5) -> tuple:
-        """
-        Automatically detect and remove dead space/silence from all audio chunks in a project.
-        
-        Args:
-            project_name: Name of the project to process
-            silence_threshold: Volume threshold in dB below which audio is considered silence
-            min_silence_duration: Minimum duration in seconds for silence to be considered removable
-        
-        Returns:
-            Tuple of (success_message, processed_files_count, errors_list)
-        """
-        try:
-            import librosa
-            import numpy as np
-            from scipy.io import wavfile
-            import soundfile as sf
-            import os
-            
-            project_dir = os.path.join("audiobook_projects", project_name)
-            if not os.path.exists(project_dir):
-                return f"❌ Project '{project_name}' not found", 0, []
-            
-            chunk_files = [f for f in os.listdir(project_dir) if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
-            if not chunk_files:
-                return f"❌ No audio chunks found in project '{project_name}'", 0, []
-            
-            processed_count = 0
-            errors = []
-            backup_dir = os.path.join(project_dir, "backup_before_cleanup")
-            os.makedirs(backup_dir, exist_ok=True)
-            
-            for chunk_file in chunk_files:
-                try:
-                    chunk_path = os.path.join(project_dir, chunk_file)
-                    backup_path = os.path.join(backup_dir, chunk_file)
-                    
-                    # Create backup
-                    import shutil
-                    shutil.copy2(chunk_path, backup_path)
-                    
-                    # Load audio
-                    audio, sr = librosa.load(chunk_path, sr=None)
-                    
-                    # Convert to dB
-                    audio_db = librosa.amplitude_to_db(np.abs(audio), ref=np.max)
-                    
-                    # Find non-silent regions
-                    non_silent = audio_db > silence_threshold
-                    
-                    # Find the start and end of non-silent regions
-                    if np.any(non_silent):
-                        non_silent_indices = np.where(non_silent)[0]
-                        start_idx = non_silent_indices[0]
-                        end_idx = non_silent_indices[-1] + 1
-                        
-                        # Trim the audio
-                        trimmed_audio = audio[start_idx:end_idx]
-                        
-                        # Only save if we actually trimmed something significant
-                        original_duration = len(audio) / sr
-                        trimmed_duration = len(trimmed_audio) / sr
-                        
-                        if original_duration - trimmed_duration > min_silence_duration:
-                            # Save the trimmed audio
-                            sf.write(chunk_path, trimmed_audio, sr)
-                            processed_count += 1
-                            print(f"Trimmed {chunk_file}: {original_duration:.2f}s -> {trimmed_duration:.2f}s")
-                        else:
-                            # Remove backup if no significant change
-                            os.remove(backup_path)
-                    else:
-                        errors.append(f"{chunk_file}: Appears to be completely silent")
-                        
-                except Exception as e:
-                    errors.append(f"{chunk_file}: {str(e)}")
-                    continue
-            
-            if processed_count > 0:
-                success_msg = f"✅ Successfully processed {processed_count} chunks. Backups saved in backup_before_cleanup folder."
-            else:
-                success_msg = f"ℹ️ No dead space found to remove in {len(chunk_files)} chunks."
-                
-            return success_msg, processed_count, errors
-            
-        except ImportError as e:
-            return f"❌ Missing required library for audio processing: {str(e)}", 0, []
-        except Exception as e:
-            return f"❌ Error processing project: {str(e)}", 0, []
-
-
-    def analyze_project_audio_quality(project_name: str) -> tuple:
-        """
-        Analyze audio quality metrics for all chunks in a project.
-        
-        Returns:
-            Tuple of (analysis_report, metrics_dict)
-        """
-        try:
-            import librosa
-            import numpy as np
-            import os
-            
-            project_dir = os.path.join("audiobook_projects", project_name)
-            if not os.path.exists(project_dir):
-                return f"❌ Project '{project_name}' not found", {}
-            
-            chunk_files = [f for f in os.listdir(project_dir) if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
-            if not chunk_files:
-                return f"❌ No audio chunks found in project '{project_name}'", {}
-            
-            metrics = {
-                'total_chunks': len(chunk_files),
-                'silent_chunks': 0,
-                'short_chunks': 0,
-                'long_silence_chunks': 0,
-                'avg_duration': 0,
-                'total_duration': 0
-            }
-            
-            durations = []
-            problematic_chunks = []
-            
-            for chunk_file in chunk_files:
-                try:
-                    chunk_path = os.path.join(project_dir, chunk_file)
-                    audio, sr = librosa.load(chunk_path, sr=None)
-                    duration = len(audio) / sr
-                    durations.append(duration)
-                    
-                    # Check for silence
-                    audio_db = librosa.amplitude_to_db(np.abs(audio), ref=np.max)
-                    if np.max(audio_db) < -40:  # Very quiet
-                        metrics['silent_chunks'] += 1
-                        problematic_chunks.append(f"{chunk_file}: Very quiet/silent")
-                    
-                    # Check for very short chunks
-                    if duration < 0.5:
-                        metrics['short_chunks'] += 1
-                        problematic_chunks.append(f"{chunk_file}: Very short ({duration:.2f}s)")
-                    
-                    # Check for long silence at beginning/end
-                    silence_threshold = -50
-                    non_silent = audio_db > silence_threshold
-                    if np.any(non_silent):
-                        non_silent_indices = np.where(non_silent)[0]
-                        start_silence = non_silent_indices[0] / sr
-                        end_silence = (len(audio) - non_silent_indices[-1]) / sr
-                        
-                        if start_silence > 1.0 or end_silence > 1.0:
-                            metrics['long_silence_chunks'] += 1
-                            problematic_chunks.append(f"{chunk_file}: Long silence (start: {start_silence:.2f}s, end: {end_silence:.2f}s)")
-                            
-                except Exception as e:
-                    problematic_chunks.append(f"{chunk_file}: Analysis error - {str(e)}")
-            
-            metrics['avg_duration'] = np.mean(durations) if durations else 0
-            metrics['total_duration'] = np.sum(durations) if durations else 0
-            
-            report = f"""📊 Audio Quality Analysis for '{project_name}':
-            
-📈 Overall Stats:
-• Total Chunks: {metrics['total_chunks']}
-• Total Duration: {metrics['total_duration']:.1f} seconds ({metrics['total_duration']/60:.1f} minutes)
-• Average Chunk Duration: {metrics['avg_duration']:.2f} seconds
-
-⚠️ Potential Issues:
-• Silent/Very Quiet Chunks: {metrics['silent_chunks']}
-• Very Short Chunks: {metrics['short_chunks']} 
-• Chunks with Long Silence: {metrics['long_silence_chunks']}
-
-📋 Problematic Chunks:
-{chr(10).join(problematic_chunks[:10])}
-{'... and more' if len(problematic_chunks) > 10 else ''}
-"""
-            
-            return report, metrics
-            
-        except ImportError:
-            return "❌ Missing required libraries for audio analysis (librosa, numpy)", {}
-        except Exception as e:
-            return f"❌ Error analyzing project: {str(e)}", {}
-
-    # Load projects on tab initialization  
-    demo.load(
-        fn=force_refresh_single_project_dropdown,
-        inputs=[],
-        outputs=project_dropdown
-    )
-    
-    # Refresh projects dropdown
-    refresh_projects_btn.click(
-        fn=force_complete_project_refresh,
-        inputs=[],
-        outputs=project_dropdown
-    )
-    
-    # Clean Samples event handlers
-    clean_project_state = gr.State("")
-    
-    def load_clean_project(project_name: str) -> tuple:
-        """Load a project for cleaning operations"""
-        if not project_name:
-            return "📁 Select a project to start cleaning", True, True, True, project_name
-        
-        project_dir = os.path.join("audiobook_projects", project_name)
-        if not os.path.exists(project_dir):
-            return f"❌ Project '{project_name}' not found", True, True, True, ""
-        
-        chunk_files = [f for f in os.listdir(project_dir) if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
-        if not chunk_files:
-            return f"❌ No audio chunks found in project '{project_name}'", True, True, True, ""
-        
-        status_msg = f"✅ Project '{project_name}' loaded successfully!<br/>📊 Found {len(chunk_files)} audio chunks ready for analysis and cleaning."
-        return status_msg, True, True, True, project_name
-    
-    refresh_clean_projects_btn.click(
-        fn=lambda: get_project_choices(),
-        inputs=[],
-        outputs=clean_project_dropdown
-    )
-    
-    load_clean_project_btn.click(
-        fn=load_clean_project,
-        inputs=[clean_project_dropdown],
-        outputs=[clean_project_status, analyze_audio_btn, auto_clean_btn, preview_clean_btn, clean_project_state]
-    )
-    
-    analyze_audio_btn.click(
-        fn=analyze_project_audio_quality,
-        inputs=[clean_project_state],
-        outputs=[audio_analysis_results]
-    )
-    
-    def handle_auto_clean(project_name: str, silence_threshold: float, min_silence_duration: float) -> tuple:
-        """Handle automatic dead space removal"""
-        if not project_name:
-            return "❌ No project loaded", "📝 Load a project first"
-        
-        result = auto_remove_dead_space(project_name, silence_threshold, min_silence_duration)
-        success_msg, processed_count, errors = result
-        
-        if errors:
-            error_msg = f"<br/>⚠️ Errors encountered:<br/>" + "<br/>".join(errors[:5])
-            if len(errors) > 5:
-                error_msg += f"<br/>... and {len(errors) - 5} more errors"
-            success_msg += error_msg
-        
-        detailed_results = f"""
-        <div class='instruction-box'>
-            <h4>🧹 Cleanup Results:</h4>
-            <p><strong>Files Processed:</strong> {processed_count}</p>
-            <p><strong>Status:</strong> {success_msg}</p>
-        </div>
-        """
-        
-        return success_msg, detailed_results
-    
-    auto_clean_btn.click(
-        fn=handle_auto_clean,
-        inputs=[clean_project_state, silence_threshold, min_silence_duration],
-        outputs=[cleanup_status, cleanup_results]
-    )
-    
-    def preview_cleanup_changes(project_name: str, silence_threshold: float, min_silence_duration: float) -> str:
-        """Preview what will be cleaned without making changes"""
-        if not project_name:
-            return "❌ No project loaded"
-        
-        # This would analyze without making changes
-        analysis_result = analyze_project_audio_quality(project_name)
-        report, metrics = analysis_result
-        
-        preview_msg = f"""
-        <div class='instruction-box'>
-            <h4>👁️ Cleanup Preview:</h4>
-            <p><strong>Silence Threshold:</strong> {silence_threshold} dB</p>
-            <p><strong>Min Silence Duration:</strong> {min_silence_duration}s</p>
-            <p><strong>Potential Issues Found:</strong></p>
-            {report}
-            <p><strong>💡 Note:</strong> This is a preview - no files will be modified until you run Auto Remove Dead Space.</p>
-        </div>
-        """
-        
-        return preview_msg
-    
-    preview_clean_btn.click(
-        fn=preview_cleanup_changes,
-        inputs=[clean_project_state, silence_threshold, min_silence_duration],
-        outputs=[cleanup_results]
-    )
-    
-    # Load clean projects dropdown on tab initialization
-    demo.load(
-        fn=force_refresh_single_project_dropdown,
-        inputs=[],
-        outputs=clean_project_dropdown
     )
 
 if __name__ == "__main__":
