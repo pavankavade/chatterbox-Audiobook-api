@@ -1,5 +1,6 @@
 # 🎧 Chatterbox Audiobook Generator
 
+**This is a work in progress. You can consider this a pre-launch repo at the moment, but if you find bugs, please put them in the issues area. Thank you.**
 **Transform your text into high-quality audiobooks with advanced TTS models, voice cloning, and professional volume normalization.**
 
 ## 🚀 Quick Start
