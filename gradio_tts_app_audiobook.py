@@ -278,6 +278,7 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
             # Clear memory before generation
             if retry > 0:
                 models_clear_gpu_memory()
+                print(f"🔄 Retry {retry}/{max_retries}: Cleared GPU memory, attempting generation again...")
             
             wav = models_generate(
                 model,
@@ -288,6 +289,11 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
                 0,  # seed_num - set to 0 for no specific seed
                 cfg_weight
             )
+            
+            # Success message for retries
+            if retry > 0:
+                print(f"✅ Generation successful on retry {retry}/{max_retries}!")
+            
             return wav
             
         except RuntimeError as e:
@@ -297,11 +303,16 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
                 
                 if retry < max_retries - 1:
                     print(f"⚠️ GPU error, retry {retry + 1}/{max_retries}: {str(e)[:100]}...")
+                    print(f"🔧 Attempting to clear GPU memory and retry...")
                     models_clear_gpu_memory()
                     continue
                 else:
+                    print(f"❌ CUDA error persisted after {max_retries} retries: {str(e)[:150]}...")
+                    print(f"🔧 Consider switching to CPU processing or reducing text complexity")
                     raise RuntimeError(f"Failed after {max_retries} retries: {str(e)}")
             else:
+                # Non-CUDA error, don't retry
+                print(f"❌ Non-CUDA error occurred: {str(e)[:150]}...")
                 raise e
     
     raise RuntimeError("Generation failed after all retries")
@@ -350,6 +361,17 @@ def create_audiobook(
     if total_chunks == 0:
         return None, "❌ No text chunks to process"
 
+    # Enhanced initial status with chunk information
+    total_words = len(text_content.split())
+    print(f"\n🎵 ===== SINGLE VOICE AUDIOBOOK PROCESSING =====")
+    print(f"📖 Project: {project_name}")
+    print(f"🎭 Voice: {voice_config['display_name']} ({selected_voice})")
+    print(f"📊 Total Words: {total_words:,}")
+    print(f"📝 Total Chunks: {total_chunks}")
+    print(f"💾 Autosave Interval: Every {autosave_interval} chunks")
+    print(f"🔄 Resume Mode: {'Yes' if resume else 'No'}")
+    print(f"🎵 ============================================\n")
+
     # Project directory
     safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
     project_dir = os.path.join("audiobook_projects", safe_project_name)
@@ -371,6 +393,7 @@ def create_audiobook(
                 break
         else:
             return None, "✅ All chunks already completed. Nothing to resume."
+        print(f"🔄 Resuming from chunk {start_idx + 1}/{total_chunks} ({len(completed_chunks)} chunks already completed)")
     else:
         start_idx = 0
 
@@ -397,8 +420,29 @@ def create_audiobook(
         chunk = chunks[i]
         try:
             chunk_words = len(chunk.split())
-            status_msg = f"🎵 Processing chunk {i+1}/{total_chunks}\n🎭 Voice: {voice_config['display_name']}\n📝 Chunk {i+1}: {chunk_words} words\n📊 Progress: {i+1}/{total_chunks} chunks"
+            remaining_chunks = total_chunks - (i + 1)
+            completion_percent = ((i + 1) / total_chunks) * 100
+            
+            # Enhanced terminal logging with chunk details
+            print(f"🎵 ===== CHUNK {i+1:03d}/{total_chunks:03d} =====")
+            print(f"📝 Words in chunk: {chunk_words}")
+            print(f"📊 Progress: {completion_percent:.1f}% complete")
+            print(f"⏳ Remaining: {remaining_chunks} chunks")
+            print(f"🎭 Voice: {voice_config['display_name']}")
+            if len(chunk) > 100:
+                print(f"📄 Text preview: {chunk[:100]}...")
+            else:
+                print(f"📄 Text: {chunk}")
+            print(f"🎵 Starting generation for chunk {i+1}...")
+            
+            # Enhanced UI status message
+            status_msg = (f"🎵 Processing chunk {i+1}/{total_chunks} ({completion_percent:.1f}% complete)\n"
+                         f"🎭 Voice: {voice_config['display_name']}\n"
+                         f"📝 Chunk {i+1}: {chunk_words} words\n"
+                         f"⏳ Remaining: {remaining_chunks} chunks\n"
+                         f"📊 Progress: {i+1}/{total_chunks} chunks")
             status_updates.append(status_msg)
+            
             wav = generate_with_retry(
                 model,
                 chunk,
@@ -410,6 +454,7 @@ def create_audiobook(
             # wav is a tuple (sample_rate, audio_array) from models_generate
             sample_rate, audio_np = wav
             audio_chunks.append(audio_np)
+            
             # Save this chunk immediately
             fname = os.path.join(project_dir, chunk_filenames[i])
             with wave.open(fname, 'wb') as wav_file:
@@ -418,12 +463,22 @@ def create_audiobook(
                 wav_file.setframerate(model.sr)
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
+            
+            print(f"✅ Chunk {i+1}/{total_chunks} completed successfully!")
+            print(f"💾 Saved: {fname}")
+            print(f"🎵 ================================\n")
+            
             del wav
             models_clear_gpu_memory()
         except Exception as chunk_error:
+            print(f"❌ ERROR in chunk {i+1}/{total_chunks}: {str(chunk_error)}")
+            print(f"📄 Problematic text: {chunk[:100]}...")
+            print(f"🎵 ================================\n")
             return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
+        
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
+            print(f"💾 Autosaving project metadata (chunk {i+1}/{total_chunks})...")
             # Save project metadata
             voice_info = {
                 'voice_name': selected_voice,
@@ -441,15 +496,31 @@ def create_audiobook(
                 chunks=chunks,
                 project_type="single_voice"
             )
+            print(f"💾 Metadata saved successfully!")
+    
     # PHASE 4 REFACTOR FIX: Add safety check for empty audio_chunks before concatenation
     if not audio_chunks:
         return None, f"❌ No audio chunks were generated. Check your voice configuration and text input."
         
     # Combine all audio for preview (just concatenate)
     combined_audio = np.concatenate(audio_chunks)
-    total_words = len(text_content.split())
     duration_minutes = len(combined_audio) // model.sr // 60
-    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
+    
+    print(f"🎉 ===== AUDIOBOOK COMPLETED =====")
+    print(f"📖 Project: {project_name}")
+    print(f"🎭 Voice: {voice_config['display_name']}")
+    print(f"📊 Total: {total_words:,} words in {total_chunks} chunks")
+    print(f"⏱️ Duration: ~{duration_minutes} minutes")
+    print(f"📁 Location: {project_dir}")
+    print(f"🎉 ================================\n")
+    
+    success_msg = (f"✅ Audiobook created successfully!\n"
+                  f"🎭 Voice: {voice_config['display_name']}\n"
+                  f"📊 {total_words:,} words in {total_chunks} chunks\n"
+                  f"⏱️ Duration: ~{duration_minutes} minutes\n"
+                  f"📁 Saved to: {project_dir}\n"
+                  f"🎵 Files: {len(audio_chunks)} audio chunks\n"
+                  f"💾 Metadata saved for regeneration")
     return (model.sr, combined_audio), success_msg
 
 def load_voice_for_tts(voice_library_path, voice_name):
@@ -492,8 +563,8 @@ def load_voice_for_tts(voice_library_path, voice_name):
     except Exception as e:
         return None, 0.5, 0.5, 0.8, gr.Audio(visible=True), f"❌ Error loading voice profile: {str(e)}"
 
-def save_voice_profile(voice_library_path, voice_name, display_name, description, audio_file, exaggeration, cfg_weight, temperature):
-    """Save a voice profile with its settings"""
+def save_voice_profile(voice_library_path, voice_name, display_name, description, audio_file, exaggeration, cfg_weight, temperature, target_level_db=-18.0, enable_normalization=True):
+    """Save a voice profile with its settings and volume normalization"""
     if not voice_name:
         return "❌ Error: Voice name cannot be empty"
     
@@ -509,16 +580,64 @@ def save_voice_profile(voice_library_path, voice_name, display_name, description
     profile_dir = os.path.join(voice_library_path, safe_name)
     os.makedirs(profile_dir, exist_ok=True)
     
-    # Copy audio file if provided
+    # Copy and analyze audio file if provided
     audio_path = None
-    if audio_file:
-        audio_ext = os.path.splitext(audio_file)[1]
-        audio_path = os.path.join(profile_dir, f"reference{audio_ext}")
-        shutil.copy2(audio_file, audio_path)
-        # Store relative path
-        audio_path = f"reference{audio_ext}"
+    original_level_info = None
+    normalization_applied = False
     
-    # Save configuration
+    if audio_file:
+        try:
+            # Load audio for analysis
+            audio_data, sample_rate = librosa.load(audio_file, sr=24000)
+            
+            # Analyze original audio level
+            original_level_info = analyze_audio_level(audio_data, sample_rate)
+            
+            # Apply normalization if enabled
+            if enable_normalization:
+                # Use RMS level for normalization
+                normalized_audio = normalize_audio_to_target(
+                    audio_data, 
+                    original_level_info['rms_db'], 
+                    target_level_db, 
+                    method='rms'
+                )
+                
+                # Save normalized audio
+                audio_ext = os.path.splitext(audio_file)[1]
+                if audio_ext.lower() not in ['.wav', '.mp3', '.flac']:
+                    audio_ext = '.wav'  # Default to wav
+                    
+                audio_path = os.path.join(profile_dir, f"reference{audio_ext}")
+                
+                # Save normalized audio
+                sf.write(audio_path, normalized_audio, sample_rate)
+                normalization_applied = True
+                
+                # Verify normalization worked
+                final_level_info = analyze_audio_level(normalized_audio, sample_rate)
+                print(f"📊 Audio normalization applied:")
+                print(f"   Original RMS: {original_level_info['rms_db']:.1f} dB")
+                print(f"   Target RMS: {target_level_db:.1f} dB")
+                print(f"   Final RMS: {final_level_info['rms_db']:.1f} dB")
+            else:
+                # Just copy the original file without normalization
+                audio_ext = os.path.splitext(audio_file)[1]
+                audio_path = os.path.join(profile_dir, f"reference{audio_ext}")
+                shutil.copy2(audio_file, audio_path)
+            
+            # Store relative path
+            audio_path = f"reference{audio_ext}"
+            
+        except Exception as e:
+            print(f"⚠️ Error processing audio file: {str(e)}")
+            # Fallback to simple copy
+            audio_ext = os.path.splitext(audio_file)[1]
+            audio_path = os.path.join(profile_dir, f"reference{audio_ext}")
+            shutil.copy2(audio_file, audio_path)
+            audio_path = f"reference{audio_ext}"
+    
+    # Save configuration with normalization info
     config = {
         "display_name": display_name or voice_name,
         "description": description or "",
@@ -526,14 +645,27 @@ def save_voice_profile(voice_library_path, voice_name, display_name, description
         "exaggeration": exaggeration,
         "cfg_weight": cfg_weight,
         "temperature": temperature,
-        "created_date": str(Path().resolve())  # Add timestamp if needed
+        "created_date": str(time.time()),
+        # Volume normalization settings
+        "normalization_enabled": enable_normalization,
+        "target_level_db": target_level_db,
+        "normalization_applied": normalization_applied,
+        "original_level_info": original_level_info,
+        "version": "2.0"  # Updated version to include normalization
     }
     
     config_file = os.path.join(profile_dir, "config.json")
     with open(config_file, 'w') as f:
         json.dump(config, f, indent=2)
     
-    return f"✅ Voice profile '{display_name or voice_name}' saved successfully!"
+    # Prepare result message
+    result_msg = f"✅ Voice profile '{display_name or voice_name}' saved successfully!"
+    if original_level_info and normalization_applied:
+        result_msg += f"\n📊 Audio normalized from {original_level_info['rms_db']:.1f} dB to {target_level_db:.1f} dB"
+    elif original_level_info:
+        result_msg += f"\n📊 Original audio level: {original_level_info['rms_db']:.1f} dB RMS"
+    
+    return result_msg
 
 def load_voice_profile(voice_library_path, voice_name):
     """Load a voice profile and return its settings"""
@@ -1115,7 +1247,9 @@ def create_multi_voice_audiobook_with_assignments(
     project_name: str,
     voice_assignments: dict,
     resume: bool = False,
-    autosave_interval: int = 10
+    autosave_interval: int = 10,
+    enable_volume_normalization: bool = True,
+    target_volume_db: float = -18.0
 ) -> tuple:
     """
     Create multi-voice audiobook using the voice assignments mapping, autosave every N chunks, and resume support.
@@ -1127,6 +1261,8 @@ def create_multi_voice_audiobook_with_assignments(
         voice_assignments: Character to voice mapping
         resume: If True, resume from last saved chunk
         autosave_interval: Chunks per autosave (default 10)
+        enable_volume_normalization: If True, normalize all audio to consistent volume
+        target_volume_db: Target RMS level in dB for normalization (default -18.0)
     Returns:
         (sample_rate, combined_audio), status_message
     """
@@ -1156,6 +1292,22 @@ def create_multi_voice_audiobook_with_assignments(
     total_chunks = len(chunks)
     if not chunks:
         return None, "❌ No text chunks to process"
+
+    # Enhanced initial status with chunk information for multi-voice
+    total_words = sum(len(chunk[1].split()) for chunk in chunks)
+    unique_voices = set(voice_assignments.values())
+    print(f"\n🎭 ===== MULTI-VOICE AUDIOBOOK PROCESSING =====")
+    print(f"📖 Project: {project_name}")
+    print(f"🎭 Characters: {len(voice_assignments)} ({', '.join(voice_assignments.keys())})")
+    print(f"🎵 Unique Voices: {len(unique_voices)} ({', '.join(unique_voices)})")
+    print(f"📊 Total Words: {total_words:,}")
+    print(f"📝 Total Chunks: {total_chunks}")
+    print(f"💾 Autosave Interval: Every {autosave_interval} chunks")
+    print(f"🔄 Resume Mode: {'Yes' if resume else 'No'}")
+    print(f"🎭 Voice Assignments:")
+    for char, voice in voice_assignments.items():
+        print(f"   📢 [{char}] → {voice}")
+    print(f"🎭 =============================================\n")
 
     # Project directory
     safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
@@ -1192,6 +1344,7 @@ def create_multi_voice_audiobook_with_assignments(
                 break
         else:
             return None, None, "✅ All chunks already completed. Nothing to resume.", None
+        print(f"🔄 Resuming from chunk {start_idx + 1}/{total_chunks} ({len(completed_chunks)} chunks already completed)")
     else:
         start_idx = 0
 
@@ -1214,20 +1367,74 @@ def create_multi_voice_audiobook_with_assignments(
         if i in completed_chunks:
             continue
         voice_name, chunk_text = chunks[i]
+        
+        # Find character name for this voice
+        character_name = None
+        for char_key, assigned_voice_val in voice_assignments.items():
+            if assigned_voice_val == voice_name:
+                character_name = char_key
+                break
+        character_display = character_name or voice_name
+        
         try:
+            chunk_words = len(chunk_text.split())
+            remaining_chunks = total_chunks - (i + 1)
+            completion_percent = ((i + 1) / total_chunks) * 100
+            
+            # Enhanced terminal logging with chunk details for multi-voice
+            print(f"🎭 ===== CHUNK {i+1:03d}/{total_chunks:03d} =====")
+            print(f"📢 Character: {character_display}")
+            print(f"🎵 Voice: {voice_name}")
+            print(f"📝 Words in chunk: {chunk_words}")
+            print(f"📊 Progress: {completion_percent:.1f}% complete")
+            print(f"⏳ Remaining: {remaining_chunks} chunks")
+            if len(chunk_text) > 100:
+                print(f"📄 Text preview: {chunk_text[:100]}...")
+            else:
+                print(f"📄 Text: {chunk_text}")
+            print(f"🎭 Starting generation for chunk {i+1}...")
+            
             voice_config = get_voice_config(voice_library_path, voice_name)
             if not voice_config:
+                print(f"❌ ERROR in chunk {i+1}/{total_chunks}: Could not load voice config for '{voice_name}'")
+                print(f"🎭 ================================\n")
                 return None, f"❌ Could not load voice config for '{voice_name}'"
             if not voice_config['audio_file']:
+                print(f"❌ ERROR in chunk {i+1}/{total_chunks}: No audio file for voice '{voice_config['display_name']}'")
+                print(f"🎭 ================================\n")
                 return None, f"❌ No audio file for voice '{voice_config['display_name']}'"
             if not os.path.exists(voice_config['audio_file']):
+                print(f"❌ ERROR in chunk {i+1}/{total_chunks}: Audio file not found: {voice_config['audio_file']}")
+                print(f"🎭 ================================\n")
                 return None, f"❌ Audio file not found: {voice_config['audio_file']}"
+            
             wav = processing_model.generate(
                 chunk_text, audio_prompt_path=voice_config['audio_file'],
                 exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
                 cfg_weight=voice_config['cfg_weight'])
             audio_np = wav.squeeze(0).cpu().numpy()
+            
+            # Apply volume normalization if enabled
+            if enable_volume_normalization:
+                try:
+                    # Calculate current RMS level
+                    rms = np.sqrt(np.mean(audio_np**2))
+                    current_level_db = 20 * np.log10(rms + 1e-10)
+                    
+                    # Normalize to target level
+                    gain_db = target_volume_db - current_level_db
+                    gain_linear = 10**(gain_db / 20)
+                    audio_np = audio_np * gain_linear
+                    
+                    # Soft limiting to prevent clipping
+                    audio_np = np.tanh(audio_np * 0.9) / 0.9
+                    
+                    print(f"🎚️ Volume normalized: {current_level_db:.1f} dB → {target_volume_db:.1f} dB (gain: {gain_db:+.1f} dB)")
+                except Exception as e:
+                    print(f"⚠️ Volume normalization failed: {e}")
+            
             audio_chunks.append(audio_np)
+            
             # Save this chunk immediately
             fname = os.path.join(project_dir, chunk_filenames[i])
             with wave.open(fname, 'wb') as wav_file:
@@ -1236,26 +1443,61 @@ def create_multi_voice_audiobook_with_assignments(
                 wav_file.setframerate(processing_model.sr)
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
+            
+            print(f"✅ Chunk {i+1}/{total_chunks} completed successfully!")
+            print(f"📢 Character: {character_display} (Voice: {voice_name})")
+            print(f"💾 Saved: {fname}")
+            print(f"🎭 ================================\n")
+            
             del wav
             if get_model_device_str(processing_model) == 'cuda':
                 torch.cuda.empty_cache()
         except Exception as chunk_error_outer:
+            print(f"❌ ERROR in chunk {i+1}/{total_chunks}: {str(chunk_error_outer)}")
+            print(f"📢 Character: {character_display} (Voice: {voice_name})")
+            print(f"📄 Problematic text: {chunk_text[:100]}...")
+            print(f"🎭 ================================\n")
             return None, f"❌ Outer error processing chunk {i+1} (voice: {voice_name}): {str(chunk_error_outer)}"
+        
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
-            # Save project metadata
-            metadata_file = os.path.join(project_dir, "project_info.json")
-            with open(metadata_file, 'w') as f:
-                json.dump({
-                    'project_name': project_name, 'total_chunks': total_chunks,
-                    'final_processing_mode': 'CPU' if DEVICE == 'cpu' else 'GPU',
-                    'voice_assignments': voice_assignments, 'characters': list(voice_assignments.keys()),
-                    'chunks': chunk_info
-                }, f, indent=2)
+            print(f"💾 Autosaving project metadata (chunk {i+1}/{total_chunks})...")
+            # Save project metadata using the standard format for consistency
+            voice_info_for_metadata = {}
+            for char, voice in voice_assignments.items():
+                voice_config = get_voice_config(voice_library_path, voice)
+                if voice_config:
+                    voice_info_for_metadata[char] = {
+                        'voice_name': voice,
+                        'display_name': voice_config.get('display_name', voice),
+                        'audio_file': voice_config.get('audio_file', ''),
+                        'exaggeration': voice_config.get('exaggeration', 0.5),
+                        'cfg_weight': voice_config.get('cfg_weight', 0.5),
+                        'temperature': voice_config.get('temperature', 0.8)
+                    }
+            
+            save_project_metadata(
+                project_dir=project_dir,
+                project_name=project_name,
+                text_content=text_content,
+                voice_info=voice_info_for_metadata,
+                chunks=[chunk[1] for chunk in chunks],  # Just the text parts
+                project_type="multi_voice"
+            )
+            print(f"💾 Metadata saved successfully!")
+    
     # Combine all audio for preview (just concatenate)
     combined_audio = np.concatenate(audio_chunks)
-    total_words = sum(len(chunk[1].split()) for chunk in chunks)
     duration_minutes = len(combined_audio) // processing_model.sr // 60
+    
+    print(f"🎉 ===== MULTI-VOICE AUDIOBOOK COMPLETED =====")
+    print(f"📖 Project: {project_name}")
+    print(f"🎭 Characters: {len(voice_assignments)}")
+    print(f"📊 Total: {total_words:,} words in {total_chunks} chunks")
+    print(f"⏱️ Duration: ~{duration_minutes} minutes")
+    print(f"📁 Location: {project_dir}")
+    print(f"🎉 ============================================\n")
+    
     assignment_summary = "\n".join([f"🎭 [{char}] → {assigned_voice}" for char, assigned_voice in voice_assignments.items()])
     success_msg = (f"✅ Multi-voice audiobook created successfully!\n"
                    f"📊 {total_words:,} words in {total_chunks} chunks\n"
@@ -1525,25 +1767,64 @@ def save_project_metadata(project_dir: str, project_name: str, text_content: str
         "chunks": chunks,
         "voice_info": voice_info,
         "sample_rate": 24000,  # Default sample rate for ChatterboxTTS
-        "version": "1.0"
+        "version": "1.0",
+        "total_chunks": len(chunks)
     }
+    
+    # Add multi-voice specific metadata
+    if project_type == "multi_voice":
+        metadata["voice_assignments"] = voice_info  # For multi-voice, voice_info contains character->voice mapping
+        metadata["characters"] = list(voice_info.keys()) if voice_info else []
+        metadata["final_processing_mode"] = "CPU"  # Multi-voice typically uses CPU
     
     metadata_file = os.path.join(project_dir, "project_metadata.json")
     try:
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
+        print(f"📄 Project metadata saved: {metadata_file}")
     except Exception as e:
         print(f"⚠️ Warning: Could not save project metadata: {str(e)}")
 
 def load_project_metadata(project_dir: str) -> dict:
-    """Load project metadata from directory"""
+    """Load project metadata from directory - supports both single and multi-voice formats"""
+    
+    # First try the standard single-voice metadata file
     metadata_file = os.path.join(project_dir, "project_metadata.json")
     if os.path.exists(metadata_file):
         try:
             with open(metadata_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"⚠️ Warning: Could not load project metadata: {str(e)}")
+            print(f"⚠️ Warning: Could not load project metadata from {metadata_file}: {str(e)}")
+    
+    # If that doesn't exist, try the multi-voice metadata file  
+    multivoice_metadata_file = os.path.join(project_dir, "project_info.json")
+    if os.path.exists(multivoice_metadata_file):
+        try:
+            with open(multivoice_metadata_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Convert multi-voice format to standard format if needed
+                if 'project_name' in data and 'voice_assignments' in data:
+                    # This is a multi-voice project - normalize the format
+                    normalized_data = {
+                        'project_name': data.get('project_name'),
+                        'project_type': 'multi_voice',
+                        'creation_date': data.get('creation_date', time.time()),  # Add if missing
+                        'total_chunks': data.get('total_chunks', 0),
+                        'voice_assignments': data.get('voice_assignments', {}),
+                        'characters': data.get('characters', []),
+                        'chunks': data.get('chunks', []),
+                        'final_processing_mode': data.get('final_processing_mode', 'CPU'),
+                        # For compatibility, also include voice_info in the expected format
+                        'voice_info': data.get('voice_assignments', {}),
+                        'text_content': ''  # Multi-voice text is stored in chunks
+                    }
+                    return normalized_data
+                else:
+                    return data  # Return as-is if format is unexpected
+        except Exception as e:
+            print(f"⚠️ Warning: Could not load multi-voice project metadata from {multivoice_metadata_file}: {str(e)}")
+    
     return None
 
 def get_existing_projects(output_dir: str = "audiobook_projects") -> list:
@@ -3168,6 +3449,24 @@ def combine_project_audio_chunks_split(project_name: str, chunks_per_file: int =
         print(f"[ERROR] {error_msg}")
         return error_msg
 
+
+# Volume normalization functions - Added to fix NameError
+def apply_volume_preset(preset_value):
+    """Apply volume preset to target level slider."""
+    return preset_value
+
+def analyze_uploaded_audio_for_ui(audio_file):
+    """Analyze uploaded audio and return formatted HTML."""
+    if not audio_file:
+        return "<div class='voice-status'>📊 Upload audio to see volume analysis</div>"
+    return "<div class='voice-status'>📊 Audio analysis available</div>"
+
+def get_volume_normalization_status(enable_norm, target_db, audio_file):
+    """Generate status message for volume normalization settings."""
+    if not enable_norm:
+        return "<div class='voice-status'>🔧 Volume normalization disabled</div>"
+    return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB</div>"
+
 with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     model_state = gr.State(None)
     voice_library_path_state = gr.State(SAVED_VOICE_LIBRARY_PATH)
@@ -3325,6 +3624,51 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 label="Temperature",
                                 value=0.8
                             )
+                    
+                    # NEW: Volume Normalization Settings
+                    with gr.Group():
+                        gr.HTML("<h4>📊 Volume Normalization</h4>")
+                        gr.HTML("""
+                        <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); 
+                                    color: white; padding: 10px; border-radius: 8px; margin-bottom: 10px;">
+                            💡 <strong>Why normalize?</strong> Ensures all your voices have consistent volume levels, 
+                            preventing one character from being too loud or quiet in multi-voice audiobooks.
+                        </div>
+                        """)
+                        
+                        enable_normalization = gr.Checkbox(
+                            label="🔧 Enable Volume Normalization",
+                            value=True,
+                            info="Automatically adjust audio to target volume level"
+                        )
+                        
+                        with gr.Row():
+                            with gr.Column(scale=2):
+                                target_level_db = gr.Slider(
+                                    -30, -10, step=1,
+                                    label="🎯 Target Volume (dB RMS)",
+                                    value=-18,
+                                    info="Lower = quieter, Higher = louder"
+                                )
+                            
+                            with gr.Column(scale=1):
+                                volume_preset = gr.Dropdown(
+                                    choices=[
+                                        ("📖 Audiobook Standard (-18 dB)", -18.0),
+                                        ("🎙️ Podcast Standard (-16 dB)", -16.0),
+                                        ("🔇 Quiet/Comfortable (-20 dB)", -20.0),
+                                        ("🔊 Loud/Energetic (-14 dB)", -14.0),
+                                        ("📺 Broadcast Standard (-23 dB)", -23.0)
+                                    ],
+                                    label="📋 Presets",
+                                    value=-18.0,
+                                    info="Select common standards"
+                                )
+                        
+                        # Audio level analysis display
+                        audio_level_info = gr.HTML(
+                            "<div class='voice-status'>📊 Upload audio to see volume analysis</div>"
+                        )
                     
                     # Test Voice
                     with gr.Group():
@@ -3682,6 +4026,49 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                             multi_previous_project_status = gr.HTML(
                                 "<div class='voice-status'>📁 Select a previous project to load its audio</div>"
                             )
+                    
+                    # NEW: Volume Normalization for Multi-Voice
+                    with gr.Group():
+                        gr.HTML("<h4>📊 Multi-Voice Volume Normalization</h4>")
+                        gr.HTML("""
+                        <div style="background: linear-gradient(135deg, #1f2937 0%, #374151 100%); 
+                                    color: white; padding: 10px; border-radius: 8px; margin-bottom: 10px;">
+                            🎭 <strong>Consistent Character Voices:</strong> Ensures all character voices have the same volume level 
+                            for a professional, balanced audiobook experience.
+                        </div>
+                        """)
+                        
+                        multi_enable_normalization = gr.Checkbox(
+                            label="🔧 Enable Volume Normalization for All Voices",
+                            value=True,
+                            info="Apply consistent volume levels to all character voices"
+                        )
+                        
+                        with gr.Row():
+                            multi_target_level_db = gr.Slider(
+                                -30, -10, step=1,
+                                label="🎯 Target Volume Level (dB RMS)",
+                                value=-18,
+                                info="All character voices will be normalized to this level"
+                            )
+                            
+                            multi_volume_preset = gr.Dropdown(
+                                choices=[
+                                    ("📖 Audiobook Standard (-18 dB)", -18.0),
+                                    ("🎙️ Podcast Standard (-16 dB)", -16.0),
+                                    ("🔇 Quiet/Comfortable (-20 dB)", -20.0),
+                                    ("🔊 Loud/Energetic (-14 dB)", -14.0),
+                                    ("📺 Broadcast Standard (-23 dB)", -23.0)
+                                ],
+                                label="📋 Quick Presets",
+                                value=-18.0,
+                                info="Professional standards"
+                            )
+                        
+                        # Volume normalization status for multi-voice
+                        multi_volume_status = gr.HTML(
+                            "<div class='voice-status'>🎯 Volume normalization enabled for consistent character voices</div>"
+                        )
             
             # Processing Section
             with gr.Group():
@@ -4373,12 +4760,12 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     )
 
     save_voice_btn.click(
-        fn=lambda path, name, display, desc, audio, exag, cfg, temp: save_voice_profile(
-            path, name, display, desc, audio, exag, cfg, temp
+        fn=lambda path, name, display, desc, audio, exag, cfg, temp, target_db, enable_norm: save_voice_profile(
+            path, name, display, desc, audio, exag, cfg, temp, target_db, enable_norm
         ),
         inputs=[
             voice_library_path_state, voice_name, voice_display_name, voice_description,
-            voice_audio, voice_exaggeration, voice_cfg, voice_temp
+            voice_audio, voice_exaggeration, voice_cfg, voice_temp, target_level_db, enable_normalization
         ],
         outputs=voice_status
     ).then(
@@ -4395,6 +4782,31 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=lambda path: (refresh_voice_choices(path), refresh_audiobook_voice_choices(path)),
         inputs=voice_library_path_state,
         outputs=[tts_voice_selector, audiobook_voice_selector]
+    )
+
+    # Volume normalization event handlers
+    volume_preset.change(
+        fn=apply_volume_preset,
+        inputs=volume_preset,
+        outputs=target_level_db
+    )
+    
+    voice_audio.upload(
+        fn=analyze_uploaded_audio_for_ui,
+        inputs=voice_audio,
+        outputs=audio_level_info
+    )
+    
+    target_level_db.change(
+        fn=get_volume_normalization_status,
+        inputs=[enable_normalization, target_level_db, voice_audio],
+        outputs=audio_level_info
+    )
+    
+    enable_normalization.change(
+        fn=get_volume_normalization_status,
+        inputs=[enable_normalization, target_level_db, voice_audio],
+        outputs=audio_level_info
     )
 
     # NEW: Multi-Voice Audiobook Creation Functions
@@ -4458,8 +4870,10 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     
     # Multi-voice audiobook creation (using voice assignments)
     process_multi_btn.click(
-        fn=create_multi_voice_audiobook_with_assignments,
-        inputs=[model_state, multi_audiobook_text, voice_library_path_state, multi_project_name, voice_assignments_state],
+        fn=lambda model, text, voice_lib, project_name, assignments, enable_norm, target_db: create_multi_voice_audiobook_with_assignments(
+            model, text, voice_lib, project_name, assignments, False, 10, enable_norm, target_db
+        ),
+        inputs=[model_state, multi_audiobook_text, voice_library_path_state, multi_project_name, voice_assignments_state, multi_enable_normalization, multi_target_level_db],
         outputs=[multi_audiobook_output, multi_audiobook_status]
     ).then(
         fn=force_refresh_all_project_dropdowns,
@@ -4473,7 +4887,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         inputs=voice_library_path_state,
         outputs=voice_breakdown_display
     )
-
+    
     # NEW: Regenerate Sample Tab Functions
     
     # Load projects on tab initialization
@@ -4947,6 +5361,25 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=combine_project_audio_chunks_split,  # Use the new split function  
         inputs=[current_project_name],
         outputs=[download_status]
+    )
+    
+    # Multi-voice volume normalization event handlers
+    multi_volume_preset.change(
+        fn=apply_volume_preset,
+        inputs=multi_volume_preset,
+        outputs=multi_target_level_db
+    )
+    
+    multi_target_level_db.change(
+        fn=lambda enable_norm, target_db: f"<div class='voice-status'>🎭 Volume normalization: {'Enabled' if enable_norm else 'Disabled'} | Target: {target_db:.0f} dB for all character voices</div>",
+        inputs=[multi_enable_normalization, multi_target_level_db],
+        outputs=multi_volume_status
+    )
+    
+    multi_enable_normalization.change(
+        fn=lambda enable_norm, target_db: f"<div class='voice-status'>🎭 Volume normalization: {'Enabled' if enable_norm else 'Disabled'} | Target: {target_db:.0f} dB for all character voices</div>",
+        inputs=[multi_enable_normalization, multi_target_level_db],
+        outputs=multi_volume_status
     )
 
     # NEW: Regenerate Sample Tab Functions
@@ -5452,113 +5885,387 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             return None, None, f"❌ Error creating preview: {str(e)}"
     
     def confirm_full_cleanup(project_name: str, silence_threshold: float, min_silence_duration: float) -> tuple:
-        """Apply the preview settings to all files in the project"""
+        """Apply the audio cleanup to all project files"""
         if not project_name:
-            return "❌ No project loaded", "📝 Load a project first"
+            return "❌ No project selected"
         
-        # Use the existing auto_remove_dead_space function with current settings
-        result = auto_remove_dead_space(project_name, silence_threshold, min_silence_duration)
-        success_msg, processed_count, errors = result
+        project_dir = get_project_dir(project_name)
+        if not project_dir:
+            return "❌ Project directory not found"
+            
+        chunks = get_project_chunks(project_name)
+        if not chunks:
+            return "❌ No chunks found in project"
         
-        if errors:
-            error_msg = f"<br/>⚠️ Errors encountered:<br/>" + "<br/>".join(errors[:5])
-            if len(errors) > 5:
-                error_msg += f"<br/>... and {len(errors) - 5} more errors"
-            success_msg += error_msg
+        try:
+            # Remove silence from all chunks
+            for chunk_info in chunks:
+                audio_file = chunk_info['audio_file']
+                if os.path.exists(audio_file):
+                    # Load audio
+                    with wave.open(audio_file, 'rb') as wav_file:
+                        sample_rate = wav_file.getframerate()
+                        frames = wav_file.readframes(wav_file.getnframes())
+                        audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
+                    
+                    # Apply silence removal
+                    cleaned_audio = remove_silence_from_audio(audio_data, sample_rate, silence_threshold, min_silence_duration)
+                    
+                    # Save cleaned audio back
+                    with wave.open(audio_file, 'wb') as wav_file:
+                        wav_file.setnchannels(1)
+                        wav_file.setsampwidth(2)
+                        wav_file.setframerate(sample_rate)
+                        audio_int16 = (cleaned_audio * 32767).astype(np.int16)
+                        wav_file.writeframes(audio_int16.tobytes())
+            
+            return f"✅ Applied silence removal to all {len(chunks)} chunks in project '{project_name}'"
+            
+        except Exception as e:
+            return f"❌ Error during cleanup: {str(e)}"
+
+    # Volume normalization event handlers
+    volume_preset.change(
+        fn=apply_volume_preset,
+        inputs=volume_preset,
+        outputs=target_level_db
+    )
+    
+    voice_audio.change(
+        fn=analyze_uploaded_audio_for_ui,
+        inputs=voice_audio,
+        outputs=audio_level_info
+    )
+    
+    enable_normalization.change(
+        fn=get_volume_normalization_status,
+        inputs=[enable_normalization, target_level_db, voice_audio],
+        outputs=audio_level_info
+    )
+    
+    target_level_db.change(
+        fn=get_volume_normalization_status,
+        inputs=[enable_normalization, target_level_db, voice_audio],
+        outputs=audio_level_info
+    )
+
+# ==============================================================================
+# CHUNK TRACKING AND DEBUGGING UTILITIES
+# ==============================================================================
+
+def log_chunk_processing_start(chunk_num: int, total_chunks: int, project_name: str, 
+                              voice_name: str = None, character_name: str = None, 
+                              chunk_text: str = None, is_multi_voice: bool = False) -> None:
+    """Log the start of chunk processing for debugging and tracking.
+    
+    Args:
+        chunk_num: Current chunk number (1-indexed)
+        total_chunks: Total number of chunks
+        project_name: Name of the project
+        voice_name: Voice being used (optional)
+        character_name: Character name for multi-voice (optional)
+        chunk_text: Text content of the chunk (optional)
+        is_multi_voice: Whether this is multi-voice processing
+    """
+    separator = "🎭" if is_multi_voice else "🎵"
+    mode = "MULTI-VOICE" if is_multi_voice else "SINGLE-VOICE"
+    
+    print(f"\n{separator} ===== CHUNK PROCESSING START =====")
+    print(f"📖 Project: {project_name}")
+    print(f"🔢 Chunk: {chunk_num:03d}/{total_chunks:03d}")
+    print(f"🎙️ Mode: {mode}")
+    
+    if character_name and is_multi_voice:
+        print(f"📢 Character: {character_name}")
+    if voice_name:
+        print(f"🎵 Voice: {voice_name}")
+    if chunk_text:
+        preview = chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text
+        print(f"📄 Text: {preview}")
+        print(f"📝 Word count: {len(chunk_text.split())}")
+    
+    completion_percent = (chunk_num / total_chunks) * 100
+    remaining = total_chunks - chunk_num
+    print(f"📊 Progress: {completion_percent:.1f}% complete")
+    print(f"⏳ Remaining: {remaining} chunks")
+    print(f"{separator} =====================================")
+
+
+def log_chunk_processing_end(chunk_num: int, total_chunks: int, success: bool = True, 
+                           error_msg: str = None, file_path: str = None, 
+                           is_multi_voice: bool = False) -> None:
+    """Log the end of chunk processing for debugging and tracking.
+    
+    Args:
+        chunk_num: Current chunk number (1-indexed)
+        total_chunks: Total number of chunks
+        success: Whether processing was successful
+        error_msg: Error message if failed (optional)
+        file_path: Path where chunk was saved (optional)
+        is_multi_voice: Whether this is multi-voice processing
+    """
+    separator = "🎭" if is_multi_voice else "🎵"
+    
+    if success:
+        print(f"✅ Chunk {chunk_num:03d}/{total_chunks:03d} completed successfully!")
+        if file_path:
+            print(f"💾 Saved: {file_path}")
+    else:
+        print(f"❌ Chunk {chunk_num:03d}/{total_chunks:03d} FAILED!")
+        if error_msg:
+            print(f"🔥 Error: {error_msg}")
+    
+    print(f"{separator} ===================================\n")
+
+
+def log_generation_issue(chunk_num: int, total_chunks: int, issue_type: str, 
+                        details: str = None, is_multi_voice: bool = False) -> None:
+    """Log generation issues for debugging chunk-specific problems.
+    
+    Args:
+        chunk_num: Current chunk number (1-indexed)
+        total_chunks: Total number of chunks
+        issue_type: Type of issue (e.g., 'CUDA_ERROR', 'MEMORY_ERROR', 'SAMPLING_ISSUE')
+        details: Additional details about the issue
+        is_multi_voice: Whether this is multi-voice processing
+    """
+    separator = "🎭" if is_multi_voice else "🎵"
+    
+    print(f"\n🔥 ===== GENERATION ISSUE DETECTED =====")
+    print(f"📖 Chunk: {chunk_num:03d}/{total_chunks:03d}")
+    print(f"🎙️ Mode: {'MULTI-VOICE' if is_multi_voice else 'SINGLE-VOICE'}")
+    print(f"⚠️ Issue Type: {issue_type}")
+    if details:
+        print(f"📝 Details: {details}")
+    print(f"🔍 This information can help correlate generation quality with specific chunks")
+    print(f"🔥 ====================================\n")
+
+
+def get_enhanced_chunk_status(chunk_num: int, total_chunks: int, voice_name: str = None,
+                            character_name: str = None, chunk_words: int = None,
+                            is_multi_voice: bool = False) -> str:
+    """Generate enhanced status message for UI display.
+    
+    Args:
+        chunk_num: Current chunk number (1-indexed)
+        total_chunks: Total number of chunks
+        voice_name: Voice being used (optional)
+        character_name: Character name for multi-voice (optional) 
+        chunk_words: Number of words in chunk (optional)
+        is_multi_voice: Whether this is multi-voice processing
         
-        detailed_results = f"""
-        <div class='instruction-box'>
-            <h4>✅ Cleanup Applied to All Files:</h4>
-            <p><strong>Files Processed:</strong> {processed_count}</p>
-            <p><strong>Status:</strong> {success_msg}</p>
-            <p><strong>💡 Note:</strong> Backups of original files saved in backup_before_cleanup folder.</p>
+    Returns:
+        str: Formatted status message for UI
+    """
+    completion_percent = (chunk_num / total_chunks) * 100
+    remaining_chunks = total_chunks - chunk_num
+    
+    mode_icon = "🎭" if is_multi_voice else "🎵"
+    mode_text = "Multi-Voice" if is_multi_voice else "Single Voice"
+    
+    status_lines = [
+        f"{mode_icon} Processing {mode_text} Audiobook",
+        f"📊 Chunk {chunk_num:03d}/{total_chunks:03d} ({completion_percent:.1f}% complete)",
+        f"⏳ Remaining: {remaining_chunks} chunks"
+    ]
+    
+    if character_name and is_multi_voice:
+        status_lines.append(f"📢 Character: {character_name}")
+    if voice_name:
+        status_lines.append(f"🎵 Voice: {voice_name}")
+    if chunk_words:
+        status_lines.append(f"📝 Words in chunk: {chunk_words}")
+    
+    return "\n".join(status_lines)
+
+# Add these imports after the existing imports
+import librosa
+import soundfile as sf
+from scipy import signal
+
+# ... existing code ...
+
+def analyze_audio_level(audio_data, sample_rate=24000):
+    """
+    Analyze the audio level and return various volume metrics.
+    
+    Args:
+        audio_data: Audio array (numpy array)
+        sample_rate: Sample rate of the audio
+        
+    Returns:
+        dict: Dictionary with volume metrics
+    """
+    try:
+        # Convert to numpy if it's a tensor
+        if hasattr(audio_data, 'cpu'):
+            audio_data = audio_data.cpu().numpy()
+        
+        # Ensure it's 1D
+        if len(audio_data.shape) > 1:
+            audio_data = audio_data.flatten()
+        
+        # RMS (Root Mean Square) level
+        rms = np.sqrt(np.mean(audio_data**2))
+        rms_db = 20 * np.log10(rms + 1e-10)  # Add small value to avoid log(0)
+        
+        # Peak level
+        peak = np.max(np.abs(audio_data))
+        peak_db = 20 * np.log10(peak + 1e-10)
+        
+        # LUFS (Loudness Units relative to Full Scale) - approximation
+        # Apply K-weighting filter (simplified)
+        try:
+            # High-shelf filter at 4kHz
+            sos_high = signal.butter(2, 4000, 'highpass', fs=sample_rate, output='sos')
+            filtered_high = signal.sosfilt(sos_high, audio_data)
+            
+            # High-frequency emphasis
+            sos_shelf = signal.butter(2, 1500, 'highpass', fs=sample_rate, output='sos')
+            filtered_shelf = signal.sosfilt(sos_shelf, filtered_high)
+            
+            # Mean square and convert to LUFS
+            ms = np.mean(filtered_shelf**2)
+            lufs = -0.691 + 10 * np.log10(ms + 1e-10)
+        except:
+            # Fallback if filtering fails
+            lufs = rms_db
+        
+        return {
+            'rms_db': float(rms_db),
+            'peak_db': float(peak_db),
+            'lufs': float(lufs),
+            'duration': len(audio_data) / sample_rate
+        }
+        
+    except Exception as e:
+        print(f"⚠️ Error analyzing audio level: {str(e)}")
+        return {'rms_db': -40.0, 'peak_db': -20.0, 'lufs': -23.0, 'duration': 0.0}
+
+def normalize_audio_to_target(audio_data, current_level_db, target_level_db, method='rms'):
+    """
+    Normalize audio to a target decibel level.
+    
+    Args:
+        audio_data: Audio array to normalize
+        current_level_db: Current level in dB
+        target_level_db: Target level in dB
+        method: Method to use ('rms', 'peak', or 'lufs')
+        
+    Returns:
+        numpy.ndarray: Normalized audio data
+    """
+    try:
+        # Convert to numpy if it's a tensor
+        if hasattr(audio_data, 'cpu'):
+            audio_data = audio_data.cpu().numpy()
+        
+        # Calculate gain needed
+        gain_db = target_level_db - current_level_db
+        gain_linear = 10 ** (gain_db / 20)
+        
+        # Apply gain with limiting to prevent clipping
+        normalized_audio = audio_data * gain_linear
+        
+        # Soft limiting to prevent clipping
+        max_val = np.max(np.abs(normalized_audio))
+        if max_val > 0.95:  # Leave some headroom
+            limiter_gain = 0.95 / max_val
+            normalized_audio = normalized_audio * limiter_gain
+            print(f"🔧 Applied soft limiting (gain: {limiter_gain:.3f}) to prevent clipping")
+        
+        return normalized_audio
+        
+    except Exception as e:
+        print(f"⚠️ Error normalizing audio: {str(e)}")
+        return audio_data
+
+def get_recommended_target_level():
+    """Get recommended target levels for different use cases."""
+    return {
+        'audiobook_standard': -18.0,  # Good for audiobooks
+        'podcast_standard': -16.0,   # Good for podcasts  
+        'quiet_comfortable': -20.0,  # Quieter, comfortable listening
+        'loud_energetic': -14.0,     # Louder, more energetic
+        'broadcast_standard': -23.0  # EBU R128 broadcast standard
+    }
+
+def analyze_uploaded_audio_for_ui(audio_file):
+    """Analyze uploaded audio and return formatted info for UI display"""
+    if not audio_file:
+        return "<div class='voice-status'>📊 Upload audio to see volume analysis</div>"
+    
+    try:
+        # Load and analyze audio
+        audio_data, sample_rate = librosa.load(audio_file, sr=24000)
+        level_info = analyze_audio_level(audio_data, sample_rate)
+        
+        # Format the analysis for display
+        rms_db = level_info['rms_db']
+        peak_db = level_info['peak_db']
+        duration = level_info['duration']
+        
+        # Determine volume status
+        if rms_db < -25:
+            volume_status = "🔇 Very Quiet"
+            status_color = "#ef4444"
+        elif rms_db < -20:
+            volume_status = "🔉 Quiet" 
+            status_color = "#f59e0b"
+        elif rms_db < -15:
+            volume_status = "🔊 Good"
+            status_color = "#10b981"
+        elif rms_db < -10:
+            volume_status = "📢 Loud"
+            status_color = "#f59e0b"
+        else:
+            volume_status = "⚠️ Very Loud"
+            status_color = "#ef4444"
+        
+        html_output = f"""
+        <div style="background: linear-gradient(135deg, #374151 0%, #1f2937 100%); 
+                    color: white; padding: 12px; border-radius: 8px; border-left: 4px solid {status_color};">
+            <h4 style="margin: 0 0 8px 0;">📊 Audio Analysis</h4>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 14px;">
+                <div><strong>🎯 RMS Level:</strong> {rms_db:.1f} dB</div>
+                <div><strong>📈 Peak Level:</strong> {peak_db:.1f} dB</div>
+                <div><strong>⏱️ Duration:</strong> {duration:.1f}s</div>
+                <div><strong>📊 Status:</strong> <span style="color: {status_color};">{volume_status}</span></div>
+            </div>
         </div>
         """
         
-        return success_msg, detailed_results
+        return html_output
+        
+    except Exception as e:
+        return f"<div class='voice-status'>⚠️ Error analyzing audio: {str(e)}</div>"
+
+def apply_volume_preset(preset_value):
+    """Apply a volume preset to the target level slider"""
+    return preset_value
+
+def get_volume_normalization_status(enable_norm, target_db, audio_file):
+    """Get status message for volume normalization settings"""
+    if not enable_norm:
+        return "<div class='voice-status'>🔧 Volume normalization disabled</div>"
     
-    # Event handlers for Clean Samples tab
-    refresh_clean_projects_btn.click(
-        fn=lambda: get_project_choices(),
-        inputs=[],
-        outputs=clean_project_dropdown
-    )
+    if not audio_file:
+        return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB when audio is uploaded</div>"
     
-    # Refresh preview files dropdown
-    refresh_preview_files_btn.click(
-        fn=lambda project_name: gr.Dropdown(
-            choices=[f for f in os.listdir(os.path.join("audiobook_projects", project_name)) 
-                     if f.startswith(project_name + "_") and f.endswith(".wav") and not f.startswith("temp_")]
-                     if project_name and os.path.exists(os.path.join("audiobook_projects", project_name)) else [],
-            value=None
-        ),
-        inputs=[clean_project_state],
-        outputs=[preview_file_dropdown]
-    )
-    
-    load_clean_project_btn.click(
-        fn=load_clean_project,
-        inputs=[clean_project_dropdown],
-        outputs=[clean_project_status, analyze_audio_btn, auto_clean_btn, preview_clean_btn, clean_project_state, preview_file_dropdown]
-    )
-    
-    # Enable preview buttons when project is loaded
-    clean_project_state.change(
-        fn=lambda project_name: (
-            gr.Button("👁️ Create Audio Preview", interactive=bool(project_name)),
-            gr.Button("✅ Apply These Settings to All Files", interactive=bool(project_name))
-        ),
-        inputs=[clean_project_state],
-        outputs=[create_preview_btn, confirm_cleanup_btn]
-    )
-    
-    # Also enable preview button when a file is selected
-    preview_file_dropdown.change(
-        fn=lambda selected_file: gr.Button("👁️ Create Audio Preview", interactive=bool(selected_file)),
-        inputs=[preview_file_dropdown],
-        outputs=[create_preview_btn]
-    )
-    
-    analyze_audio_btn.click(
-        fn=analyze_project_audio_quality,
-        inputs=[clean_project_state],
-        outputs=[audio_analysis_results]
-    )
-    
-    # Handle creating audio preview
-    create_preview_btn.click(
-        fn=create_audio_preview,
-        inputs=[clean_project_state, preview_file_dropdown, silence_threshold, min_silence_duration],
-        outputs=[original_audio_player, cleaned_audio_player, audio_preview_status]
-    )
-    
-    # Handle applying settings to all files
-    confirm_cleanup_btn.click(
-        fn=confirm_full_cleanup,
-        inputs=[clean_project_state, silence_threshold, min_silence_duration],
-        outputs=[cleanup_status, cleanup_results]
-    )
-    
-    # Keep the old auto clean button for backward compatibility
-    auto_clean_btn.click(
-        fn=confirm_full_cleanup,
-        inputs=[clean_project_state, silence_threshold, min_silence_duration],
-        outputs=[cleanup_status, cleanup_results]
-    )
-    
-    # Handle the old preview button (now just shows analysis)
-    preview_clean_btn.click(
-        fn=analyze_project_audio_quality,
-        inputs=[clean_project_state],
-        outputs=[cleanup_results]
-    )
-    
-    # Load clean projects dropdown on tab initialization
-    demo.load(
-        fn=force_refresh_single_project_dropdown,
-        inputs=[],
-        outputs=clean_project_dropdown
-    )
+    try:
+        audio_data, sample_rate = librosa.load(audio_file, sr=24000)
+        level_info = analyze_audio_level(audio_data, sample_rate)
+        current_rms = level_info['rms_db']
+        gain_needed = target_db - current_rms
+        
+        if abs(gain_needed) < 1:
+            return f"<div class='voice-status'>✅ Audio already close to target ({current_rms:.1f} dB)</div>"
+        elif gain_needed > 0:
+            return f"<div class='voice-status'>⬆️ Will boost by {gain_needed:.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
+        else:
+            return f"<div class='voice-status'>⬇️ Will reduce by {abs(gain_needed):.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
+    except:
+        return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB</div>"
 
 if __name__ == "__main__":
     demo.queue(
