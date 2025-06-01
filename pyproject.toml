@@ -20,7 +20,11 @@ dependencies = [
     "resemble-perth==1.0.1",
     "omegaconf==2.3.0",
     "conformer==0.3.2",
+    "spacy>=3.4.0",
 ]
+
+[project.optional-dependencies]
+advanced-nlp = ["spacy[en_core_web_sm]>=3.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/resemble-ai/chatterbox"

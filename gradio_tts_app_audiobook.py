@@ -73,22 +73,75 @@ def load_model_cpu():
     return models_load_model_cpu()
 
 def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw):
+    """
+    🎯 ENHANCED with Smart Hybrid CPU/GPU Selection
+    
+    Generate audio with automatic CPU selection for short text to avoid CUDA errors.
+    """
     if model is None:
         model = models_load_model()
 
     if seed_num != 0:
         set_seed(int(seed_num))
 
-    wav = models_generate(
-        model,
-        text,
-        audio_prompt_path,
-        exaggeration,
-        temperature,
-        seed_num,
-        cfgw
-    )
-    return wav
+    text_length = len(text.strip())
+    cpu_threshold = 25  # Characters below this use CPU automatically
+    
+    # 🎯 SMART HYBRID: Force CPU for very short text (avoids CUDA srcIndex errors)
+    if text_length <= cpu_threshold:
+        print(f"🧮 Short text ({text_length} chars) → CPU: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+        try:
+            cpu_model = models_load_model_cpu()
+            wav = cpu_model.generate(
+                text,
+                audio_prompt_path,
+                exaggeration,
+                temperature,
+                cfgw,
+            )
+            print(f"✅ CPU generation successful for short text ({text_length} chars)")
+            return (cpu_model.sr, wav.squeeze(0).numpy())
+        except Exception as e:
+            raise RuntimeError(f"CPU generation failed for short text: {str(e)}")
+    
+    # Use GPU for longer text
+    print(f"🚀 Long text ({text_length} chars) → GPU: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+    
+    try:
+        wav = models_generate(
+            model,
+            text,
+            audio_prompt_path,
+            exaggeration,
+            temperature,
+            seed_num,
+            cfgw
+        )
+        print(f"✅ GPU generation successful for long text ({text_length} chars)")
+        return wav
+    except RuntimeError as e:
+        if ("srcIndex < srcSelectDimSize" in str(e) or 
+            "CUDA" in str(e) or 
+            "out of memory" in str(e).lower()):
+            
+            print(f"❌ GPU failed with CUDA error, falling back to CPU...")
+            # Final fallback to CPU
+            try:
+                cpu_model = models_load_model_cpu()
+                wav = cpu_model.generate(
+                    text,
+                    audio_prompt_path,
+                    exaggeration,
+                    temperature,
+                    cfgw,
+                )
+                print(f"✅ CPU fallback successful for long text ({text_length} chars)")
+                return (cpu_model.sr, wav.squeeze(0).numpy())
+            except Exception as cpu_error:
+                raise RuntimeError(f"Both GPU and CPU failed: GPU: {str(e)}, CPU: {str(cpu_error)}")
+        else:
+            # Non-CUDA error, re-raise
+            raise e
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight):
     """Generate audio with automatic CPU fallback for problematic CUDA errors"""
@@ -272,7 +325,35 @@ def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
     return text_adaptive_chunk_text(text, max_words, reduce_on_error)
 
 def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3):
-    """Generate audio with retry logic for CUDA errors"""
+    """
+    🎯 ENHANCED with Smart Hybrid CPU/GPU Selection + Retry Logic
+    
+    Generate audio with automatic CPU selection for short text AND retry logic for CUDA errors.
+    This solves the CUDA srcIndex error by avoiding GPU for very short chunks.
+    """
+    text_length = len(text.strip())
+    cpu_threshold = 25  # Characters below this use CPU automatically
+    
+    # 🎯 SMART HYBRID: Force CPU for very short text (avoids CUDA srcIndex errors)
+    if text_length <= cpu_threshold:
+        print(f"🧮 Short text ({text_length} chars) → CPU: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+        try:
+            cpu_model = models_load_model_cpu()
+            wav = cpu_model.generate(
+                text,
+                audio_prompt_path,
+                exaggeration,
+                temperature,
+                cfg_weight,
+            )
+            print(f"✅ CPU generation successful for short text ({text_length} chars)")
+            return (cpu_model.sr, wav.squeeze(0).numpy())
+        except Exception as e:
+            raise RuntimeError(f"CPU generation failed for short text: {str(e)}")
+    
+    # Use GPU for longer text with retry logic
+    print(f"🚀 Long text ({text_length} chars) → GPU: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+    
     for retry in range(max_retries):
         try:
             # Clear memory before generation
@@ -292,7 +373,9 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
             
             # Success message for retries
             if retry > 0:
-                print(f"✅ Generation successful on retry {retry}/{max_retries}!")
+                print(f"✅ GPU generation successful on retry {retry}/{max_retries} for long text ({text_length} chars)!")
+            else:
+                print(f"✅ GPU generation successful for long text ({text_length} chars)")
             
             return wav
             
@@ -307,9 +390,21 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
                     models_clear_gpu_memory()
                     continue
                 else:
-                    print(f"❌ CUDA error persisted after {max_retries} retries: {str(e)[:150]}...")
-                    print(f"🔧 Consider switching to CPU processing or reducing text complexity")
-                    raise RuntimeError(f"Failed after {max_retries} retries: {str(e)}")
+                    print(f"❌ GPU failed after {max_retries} retries with CUDA error, falling back to CPU...")
+                    # Final fallback to CPU for longer text
+                    try:
+                        cpu_model = models_load_model_cpu()
+                        wav = cpu_model.generate(
+                            text,
+                            audio_prompt_path,
+                            exaggeration,
+                            temperature,
+                            cfg_weight,
+                        )
+                        print(f"✅ CPU fallback successful for long text ({text_length} chars)")
+                        return (cpu_model.sr, wav.squeeze(0).numpy())
+                    except Exception as cpu_error:
+                        raise RuntimeError(f"Both GPU and CPU failed: GPU: {str(e)}, CPU: {str(cpu_error)}")
             else:
                 # Non-CUDA error, don't retry
                 print(f"❌ Non-CUDA error occurred: {str(e)[:150]}...")
@@ -1985,9 +2080,9 @@ def load_project_for_regeneration(project_name: str) -> tuple:
     if metadata.get('project_type') == 'multi_voice':
         voice_display = "🎭 Multi-voice project:\n"
         for voice_name, info in voice_info.items():
-            voice_display += f"  • {voice_name}: {info.get('display_name', voice_name)}\n"
+            voice_display += f"  • {voice_name}: {info.get('display_name', voice_name) if isinstance(info, dict) else info}\n"
     else:
-        voice_display = f"🎤 Single voice: {voice_info.get('display_name', 'Unknown')}"
+        voice_display = f"🎤 Single voice: {voice_info.get('display_name', 'Unknown') if isinstance(voice_info, dict) else voice_info}"
     
     # Load first audio file for waveform
     audio_files = project['audio_files']
@@ -2008,6 +2103,73 @@ def load_project_for_regeneration(project_name: str) -> tuple:
     
     return text_content, voice_display, project_name, first_audio, status_msg
 
+
+def resume_multi_voice_project_data(project_name: str) -> tuple:
+    """Load text_content and voice_assignments from a multi-voice project's metadata for resuming."""
+    if not project_name:
+        return None, None, "❌ No project selected for resuming data load."
+
+    # Need to import os and json if not already globally available in this scope
+    import os
+    import json
+
+    projects_dir = "audiobook_projects"
+    project_path = os.path.join(projects_dir, project_name)
+    metadata_path = os.path.join(project_path, "project_metadata.json")
+
+    if not os.path.exists(metadata_path):
+        return None, None, f"❌ Metadata file not found for project '{project_name}'."
+
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+    except Exception as e:
+        return None, None, f"❌ Error loading metadata for '{project_name}': {str(e)}"
+
+    text_content = metadata.get("text_content")
+    # Voice assignments are stored within voice_info for multi-voice projects
+    loaded_voice_info = metadata.get("voice_info")
+
+    if not text_content or not loaded_voice_info:
+        missing_items = []
+        if not text_content: missing_items.append("text content")
+        if not loaded_voice_info: missing_items.append("voice assignments (voice_info)")
+        return None, None, f"❌ Project '{project_name}' is missing: {', '.join(missing_items)} in its metadata."
+    
+    if metadata.get("project_type") != "multi_voice":
+        return None, None, f"❌ Project '{project_name}' is not a multi-voice project. Cannot resume with multi-voice settings."
+
+    # Normalize voice_assignments to be Dict[char_name, voice_profile_name_str]
+    normalized_voice_assignments = {}
+    if isinstance(loaded_voice_info, dict):
+        for char_name, voice_data in loaded_voice_info.items():
+            if isinstance(voice_data, str):
+                # Already in the desired format (voice_profile_name_str)
+                normalized_voice_assignments[char_name] = voice_data
+            elif isinstance(voice_data, dict):
+                # Legacy format: voice_data is a dictionary of details
+                # Use 'display_name' as the canonical voice profile name string
+                profile_name = voice_data.get('voice_name')
+                if profile_name:
+                    normalized_voice_assignments[char_name] = profile_name
+                else:
+                    # If display_name is missing, try 'name' field as fallback
+                    profile_name = voice_data.get('name')
+                    if profile_name:
+                        normalized_voice_assignments[char_name] = profile_name
+                    else:
+                        print(f"⚠️ CRITICAL: Could not determine voice profile name for character '{char_name}' from voice_info dict: {voice_data}")
+                        normalized_voice_assignments[char_name] = f"UNKNOWN_PROFILE_FOR_{char_name}"
+            else:
+                # Unexpected format for voice_data for a character
+                return None, None, f"❌ Unexpected voice data format for character '{char_name}' in project '{project_name}' (expected str or dict, got {type(voice_data)})."
+    else:
+        return None, None, f"❌ Voice assignments (voice_info) in project '{project_name}' is not a dictionary as expected (got {type(loaded_voice_info)})."
+
+    if not normalized_voice_assignments:
+        return None, None, f"❌ Could not derive any valid voice assignments for project '{project_name}'. Check metadata integrity."
+
+    return text_content, normalized_voice_assignments, f"✅ Data loaded for '{project_name}'"
 def create_continuous_playback_audio(project_name: str) -> tuple:
     """Create a single continuous audio file from all project chunks for Listen & Edit mode"""
     if not project_name:
@@ -2776,6 +2938,60 @@ def combine_project_audio_chunks(project_name: str, output_format: str = "wav") 
         error_msg = f"❌ Error combining audio chunks: {str(e)}"
         print(f"[ERROR] {error_msg}")
         return None, error_msg
+
+def restart_project_generation(project_name: str) -> str:
+    """
+    🔄 Restart audiobook generation from the beginning
+    
+    Resets project progress to allow regeneration from chunk 1
+    """
+    if not project_name:
+        return "<div class='voice-status'>❌ Please select a project to restart</div>"
+    
+    try:
+        # Get project directory
+        project_dir = os.path.join("audiobook_projects", project_name)
+        if not os.path.exists(project_dir):
+            return f"<div class='voice-status'>❌ Project '{project_name}' not found</div>"
+        
+        # Load existing metadata
+        metadata = load_project_metadata(project_dir)
+        if not metadata:
+            return f"<div class='voice-status'>❌ Could not load project metadata for '{project_name}'</div>"
+        
+        # Reset chunk progress in metadata
+        if 'last_generated_chunk' in metadata:
+            metadata['last_generated_chunk'] = 0
+        
+        # Save updated metadata
+        metadata_path = os.path.join(project_dir, "project_metadata.json")
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        
+        # Clean up any temporary or incomplete files
+        for file_name in os.listdir(project_dir):
+            if (file_name.startswith('temp_') or 
+                file_name.endswith('_temp.wav') or
+                file_name.endswith('_regenerated.wav')):
+                temp_file_path = os.path.join(project_dir, file_name)
+                try:
+                    os.remove(temp_file_path)
+                except:
+                    pass  # Ignore if file can't be removed
+        
+        project_type = metadata.get('project_type', 'single_voice')
+        total_chunks = len(metadata.get('chunks', []))
+        
+        return f"""<div class='voice-status'>
+        🔄 <strong>Project Restarted Successfully!</strong><br/>
+        📁 Project: {project_name} ({project_type})<br/>
+        📊 Total chunks: {total_chunks}<br/>
+        🎯 Ready to regenerate from chunk 1<br/>
+        💡 Use 'Resume Project' to start generation
+        </div>"""
+        
+    except Exception as e:
+        return f"<div class='voice-status'>❌ Error restarting project: {str(e)}</div>"
 
 def load_previous_project_audio(project_name: str) -> tuple:
     """Load a previous project's combined audio for download in creation tabs"""
@@ -3743,6 +3959,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                         with gr.Row():
                             load_project_btn = gr.Button("📂 Load Project", size="sm", variant="secondary")
                             resume_project_btn = gr.Button("▶️ Resume Project", size="sm", variant="primary")
+                            restart_single_project_btn = gr.Button("🔄 Restart Project", size="sm", variant="primary")
                         single_project_progress = gr.HTML("<div class='voice-status'>No project loaded</div>")
                 
                 with gr.Column(scale=1):
@@ -3914,6 +4131,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                         with gr.Row():
                             load_multi_project_btn = gr.Button("📂 Load Project", size="sm", variant="secondary")
                             resume_multi_project_btn = gr.Button("▶️ Resume Project", size="sm", variant="primary")
+                            restart_multi_project_btn = gr.Button("🔄 Restart Project", size="sm", variant="primary")
                         multi_project_progress = gr.HTML("<div class='voice-status'>No project loaded</div>")
                 
                 with gr.Column(scale=1):
@@ -5326,6 +5544,11 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             selected_voice = voice_match.group(1)
         return text, selected_voice, proj_name, status
 
+    def load_multi_voice_project(project_name: str):
+        """Load project info and update UI fields for multi-voice tab."""
+        text, voice_info, proj_name, _, status = load_project_for_regeneration(project_name)
+        return text, status
+
     # Handler to resume single-voice project generation
 
     def resume_single_voice_project(model, project_name, voice_library_path):
@@ -5342,6 +5565,32 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             return None, "❌ Project metadata incomplete."
         return create_audiobook(model, text_content, voice_library_path, selected_voice, project_name, resume=True)
 
+    
+    def handle_resume_multi_voice(model, project_name, voice_library_path):
+        """Handles loading data and then calling the main multi-voice creation function for resume."""
+        if not project_name:
+            return None, "<div class='audiobook-status'>❌ Please select a project to resume.</div>"
+
+        text_content, voice_assignments, load_status = resume_multi_voice_project_data(project_name)
+
+        if text_content is None or voice_assignments is None:
+            # resume_multi_voice_project_data already returns a Gradio HTML formatted error string
+            return None, load_status 
+
+        # Log the loaded data for debugging
+        print(f"[Resume Multi] Loaded text: {len(text_content)} chars, Voice Assignments: {len(voice_assignments)} characters")
+        # print(f"[Resume Multi] Voice Assignments details: {voice_assignments}") # Potentially very long
+
+        return create_multi_voice_audiobook_with_assignments(
+            model, 
+            text_content, 
+            voice_library_path, 
+            project_name, 
+            voice_assignments, 
+            resume=True
+        )
+
+
     # --- Wire up the buttons in the UI logic ---
 
     load_project_btn.click(
@@ -5354,6 +5603,35 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=resume_single_voice_project,
         inputs=[model_state, single_project_dropdown, voice_library_path_state],
         outputs=[audiobook_output, single_project_progress]
+    )
+
+    # Restart single-voice project button
+    restart_single_project_btn.click(
+        fn=restart_project_generation,
+        inputs=[single_project_dropdown],
+        outputs=[single_project_progress]
+    )
+
+    # Restart multi-voice project button  
+    restart_multi_project_btn.click(
+        fn=restart_project_generation,
+        inputs=[multi_project_dropdown],
+        outputs=[multi_project_progress]
+    )
+
+    # Load multi-voice project button
+    load_multi_project_btn.click(
+        fn=load_multi_voice_project,
+        inputs=[multi_project_dropdown],
+        outputs=[multi_audiobook_text, multi_project_progress]
+    )
+
+
+    # Resume multi-voice project button
+    resume_multi_project_btn.click(
+        fn=handle_resume_multi_voice,
+        inputs=[model_state, multi_project_dropdown, voice_library_path_state],
+        outputs=[multi_audiobook_output, multi_project_progress]
     )
 
     # Download project button

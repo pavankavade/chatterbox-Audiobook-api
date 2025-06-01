@@ -4,7 +4,8 @@ echo  Chatterbox TTS - Audiobook Edition
 echo      Enhanced Voice Management
 echo ========================================
 echo.
-
+set CUDA_LAUNCH_BLOCKING=1
+echo INFO: CUDA_LAUNCH_BLOCKING=1 set for detailed CUDA error reporting.
 echo Checking for virtual environment...
 if not exist "venv\Scripts\activate.bat" (
     echo ERROR: Virtual environment not found!
@@ -28,8 +29,8 @@ call venv\Scripts\activate.bat
 
 echo.
 echo Starting Chatterbox TTS Audiobook Edition...
-echo ✨ Features: Voice Library, Character Management, Audiobook Tools
-echo 🧹 Audio Cleaning Available in "Clean Samples" Tab
+echo Features: Voice Library, Character Management, Audiobook Tools
+echo Audio Cleaning Available in "Clean Samples" Tab
 echo This may take a moment to load the models...
 echo.
 echo Current directory: %CD%
