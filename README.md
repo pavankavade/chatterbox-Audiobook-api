@@ -15,6 +15,16 @@
 ./launch_audiobook.bat
 ```
 
+### 3. CUDA Issue Fix (If Needed)
+If you encounter CUDA assertion errors during generation, install the patched version:
+```bash
+# Activate your virtual environment first
+venv\Scripts\activate.bat
+
+# Install the CUDA-fixed version
+pip install --force-reinstall --no-cache-dir "chatterbox-tts @ git+https://github.com/fakerybakery/better-chatterbox@fix-cuda-issue"
+```
+
 The web interface will open automatically in your browser at `http://localhost:7860`
 
 ---
@@ -116,6 +126,8 @@ The web interface will open automatically in your browser at `http://localhost:7
 - CUDA compatibility issues have been resolved with updated dependencies
 - GPU acceleration is now stable for extended generation sessions
 - Fallback to CPU processing available if CUDA issues occur
+- **If you encounter CUDA assertion errors**: Use the patched version from the installation instructions above
+- The fix addresses PyTorch indexing issues that could cause crashes during audio generation
 
 ---
 
