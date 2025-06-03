@@ -112,6 +112,21 @@ The web interface will open automatically in your browser at `http://localhost:7
 - **8GB+ RAM** (16GB recommended for large projects)
 - **Modern web browser** for the interface
 
+### 🔧 **CUDA Support**
+- CUDA compatibility issues have been resolved with updated dependencies
+- GPU acceleration is now stable for extended generation sessions
+- Fallback to CPU processing available if CUDA issues occur
+
+---
+
+## ⚠️ Known Issues
+
+### **Multi-Voice Generation**
+- Short sentences or sections may occasionally cause issues during multi-voice generation
+- This is a limitation of the underlying TTS models rather than the implementation
+- **Workaround**: Use longer, more detailed sentences for better stability
+- Single-voice generation is not affected by this issue
+
 ---
 
 ## 📋 Supported Formats

@@ -1,11 +1,8 @@
 @echo off
-echo ========================================
-echo  Chatterbox TTS - Audiobook Edition
-echo      Enhanced Voice Management
-echo ========================================
-echo.
 set CUDA_LAUNCH_BLOCKING=1
 echo INFO: CUDA_LAUNCH_BLOCKING=1 set for detailed CUDA error reporting.
+set TORCH_USE_CUDA_DSA=1
+echo INFO: TORCH_USE_CUDA_DSA=1 attempted for more detailed device-side assertions.
 echo Checking for virtual environment...
 if not exist "venv\Scripts\activate.bat" (
     echo ERROR: Virtual environment not found!

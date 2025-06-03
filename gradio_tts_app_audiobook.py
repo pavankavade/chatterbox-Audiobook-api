@@ -1,21 +1,48 @@
-import random
-import numpy as np
-import torch
-import gradio as gr
-import json
-import os
-import shutil
-import re
-import wave
-from pathlib import Path
-import torchaudio
-import tempfile
-import time
-from typing import List
-import warnings
-warnings.filterwarnings("ignore")
+"""
+Gradio TTS Audiobook Application
 
-# Try importing the TTS module
+This module provides a comprehensive web-based interface for creating audiobooks using
+Text-to-Speech (TTS) technology. It supports both single-voice and multi-voice audiobook
+generation with features like voice profile management, project management, audio editing,
+and real-time playback.
+
+Key Features:
+- Single and multi-voice audiobook generation
+- Voice profile management with custom settings
+- Project-based organization with save/resume functionality
+- Real-time audio editing and trimming
+- Continuous playback with chunk tracking
+- Audio quality analysis and normalization
+- GPU/CPU processing with automatic fallback
+
+Dependencies:
+- ChatterboxTTS: Core TTS engine for audio generation
+- Gradio: Web interface framework
+- PyTorch: ML framework for TTS model execution
+- Torchaudio: Audio processing utilities
+
+Author: Generated for ChatterBox Audiobook Project
+"""
+
+# Standard library imports for core functionality
+import random          # For random seed generation in TTS
+import numpy as np     # Numerical operations for audio data processing
+import torch           # PyTorch framework for TTS model operations
+import gradio as gr    # Web interface framework
+import json            # Configuration file handling
+import os              # File system operations
+import shutil          # High-level file operations (copy, move, delete)
+import re              # Regular expressions for text parsing
+import wave            # WAV file format handling
+from pathlib import Path    # Modern path handling utilities
+import torchaudio           # Audio file I/O and processing
+import tempfile            # Temporary file creation
+import time                # Time-related operations for performance tracking
+from typing import List    # Type hints for better code documentation
+import warnings
+warnings.filterwarnings("ignore")  # Suppress non-critical warnings for cleaner output
+
+# Try importing the TTS module with graceful fallback
 try:
     from src.chatterbox.tts import ChatterboxTTS
     CHATTERBOX_AVAILABLE = True
@@ -23,32 +50,59 @@ except ImportError as e:
     print(f"Warning: ChatterboxTTS not available - {e}")
     CHATTERBOX_AVAILABLE = False
 
+# Device configuration for TTS processing
+# Automatically detect the best available device for optimal performance
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 # Force CPU mode for multi-voice to avoid CUDA indexing errors
+# Multi-voice processing has known issues with CUDA memory management
+# and tensor indexing that are more stable on CPU
 MULTI_VOICE_DEVICE = "cpu"  # Force CPU for multi-voice processing
 
-# Default voice library path
-DEFAULT_VOICE_LIBRARY = "voice_library"
-CONFIG_FILE = "audiobook_config.json"
-MAX_CHUNKS_FOR_INTERFACE = 100 # Increased from 50 to 100, will add pagination later
-MAX_CHUNKS_FOR_AUTO_SAVE = 100 # Match the interface limit for now
+# Application configuration constants
+DEFAULT_VOICE_LIBRARY = "voice_library"  # Default directory for voice profiles and samples
+CONFIG_FILE = "audiobook_config.json"     # Configuration persistence file for user settings
+
+# Interface and processing limits to prevent memory issues and ensure responsive UI
+MAX_CHUNKS_FOR_INTERFACE = 100  # Increased from 50 to 100, pagination will be added later
+MAX_CHUNKS_FOR_AUTO_SAVE = 100  # Match the interface limit for consistency
 
 def load_config():
-    """Load configuration including voice library path"""
+    """
+    Load application configuration from persistent storage.
+    
+    Reads the configuration file to retrieve user settings like voice library path.
+    Falls back to defaults if configuration file is missing or corrupted.
+    
+    Returns:
+        str: Path to the voice library directory
+    """
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
             return config.get('voice_library_path', DEFAULT_VOICE_LIBRARY)
         except:
+            # Handle corrupted or invalid JSON gracefully
             return DEFAULT_VOICE_LIBRARY
     return DEFAULT_VOICE_LIBRARY
 
 def save_config(voice_library_path):
-    """Save configuration including voice library path"""
+    """
+    Save application configuration to persistent storage.
+    
+    Stores user preferences like voice library path for future sessions.
+    Includes timestamp for troubleshooting configuration issues.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        
+    Returns:
+        str: Success or error message for user feedback
+    """
     config = {
         'voice_library_path': voice_library_path,
-        'last_updated': str(Path().resolve())  # timestamp
+        'last_updated': str(Path().resolve())  # timestamp for debugging purposes
     }
     try:
         with open(CONFIG_FILE, 'w') as f:
@@ -58,28 +112,75 @@ def save_config(voice_library_path):
         return f"❌ Error saving configuration: {str(e)}"
 
 def set_seed(seed: int):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    random.seed(seed)
-    np.random.seed(seed)
+    """
+    Set random seeds for reproducible TTS generation.
+    
+    Ensures consistent audio output across runs when using the same seed.
+    Sets seeds for all random number generators used by PyTorch and NumPy.
+    
+    Args:
+        seed (int): Random seed value for reproducible generation
+    """
+    torch.manual_seed(seed)           # CPU random number generator
+    torch.cuda.manual_seed(seed)      # Single GPU random number generator
+    torch.cuda.manual_seed_all(seed)  # Multi-GPU random number generator
+    random.seed(seed)                 # Python's built-in random module
+    np.random.seed(seed)              # NumPy random number generator
 
 def load_model():
+    """
+    Initialize and load the TTS model on the appropriate device.
+    
+    Creates a ChatterboxTTS model instance configured for the detected device
+    (CUDA GPU if available, otherwise CPU).
+    
+    Returns:
+        ChatterboxTTS: Initialized TTS model ready for audio generation
+    """
     model = ChatterboxTTS.from_pretrained(DEVICE)
     return model
 
 def load_model_cpu():
-    """Load model specifically for CPU processing"""
+    """
+    Load TTS model specifically for CPU processing.
+    
+    Used as a fallback when GPU processing fails or for multi-voice processing
+    where CPU is more stable.
+    
+    Returns:
+        ChatterboxTTS: TTS model configured for CPU execution
+    """
     model = ChatterboxTTS.from_pretrained("cpu")
     return model
 
 def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw):
+    """
+    Generate audio from text using the TTS model.
+    
+    Core TTS generation function that converts text to speech using specified
+    voice characteristics and generation parameters.
+    
+    Args:
+        model: ChatterboxTTS model instance (None will auto-load)
+        text (str): Text content to convert to speech
+        audio_prompt_path (str): Path to voice sample file for voice cloning
+        exaggeration (float): Voice characteristic amplification factor
+        temperature (float): Randomness in generation (0.0-1.0)
+        seed_num (int): Random seed for reproducible output (0 = random)
+        cfgw (float): Classifier-free guidance weight for quality control
+        
+    Returns:
+        tuple: (sample_rate, audio_array) - Audio data ready for playback
+    """
+    # Auto-load model if not provided
     if model is None:
         model = ChatterboxTTS.from_pretrained(DEVICE)
 
+    # Set random seed for reproducible generation if specified
     if seed_num != 0:
         set_seed(int(seed_num))
 
+    # Generate audio using the TTS model with specified parameters
     wav = model.generate(
         text,
         audio_prompt_path=audio_prompt_path,
@@ -90,12 +191,31 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
     return (model.sr, wav.squeeze(0).numpy())
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight):
-    """Generate audio with automatic CPU fallback for problematic CUDA errors"""
+    """
+    Generate audio with automatic CPU fallback for CUDA errors.
+    
+    Attempts GPU generation first, then falls back to CPU if CUDA errors occur.
+    This is essential for handling memory limitations and CUDA indexing issues.
+    
+    Args:
+        model: ChatterboxTTS model instance
+        text (str): Text to convert to speech
+        audio_prompt_path (str): Voice sample file path
+        exaggeration (float): Voice characteristic amplification
+        temperature (float): Generation randomness factor
+        cfg_weight (float): Classifier-free guidance weight
+        
+    Returns:
+        tuple: (audio_wav, device_used) - Generated audio and processing device
+        
+    Raises:
+        RuntimeError: When both GPU and CPU generation fail
+    """
     
     # First try GPU if available
     if DEVICE == "cuda":
         try:
-            clear_gpu_memory()
+            clear_gpu_memory()  # Clear any residual GPU memory
             wav = model.generate(
                 text,
                 audio_prompt_path=audio_prompt_path,
@@ -105,6 +225,7 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
             )
             return wav, "GPU"
         except RuntimeError as e:
+            # Check for known CUDA error patterns
             if ("srcIndex < srcSelectDimSize" in str(e) or 
                 "CUDA" in str(e) or 
                 "out of memory" in str(e).lower()):
@@ -112,6 +233,7 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
                 print(f"⚠️ CUDA error detected, falling back to CPU: {str(e)[:100]}...")
                 # Fall through to CPU mode
             else:
+                # Re-raise unexpected errors
                 raise e
     
     # CPU fallback or primary CPU mode
@@ -130,13 +252,33 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
         raise RuntimeError(f"Both GPU and CPU generation failed: {str(e)}")
 
 def force_cpu_processing():
-    """Check if we should force CPU processing for stability"""
+    """
+    Determine if CPU processing should be enforced for stability.
+    
+    Multi-voice processing has known stability issues with CUDA due to
+    memory management and indexing problems. This function centralizes
+    the decision logic for when to force CPU mode.
+    
+    Returns:
+        bool: True if CPU processing should be used, False otherwise
+    """
     # For multi-voice, always use CPU to avoid CUDA indexing issues
     return True
 
 def chunk_text_by_sentences(text, max_words=50):
     """
-    Split text into chunks, breaking at sentence boundaries after reaching max_words
+    Split text into manageable chunks for TTS processing.
+    
+    Breaks text at sentence boundaries to maintain natural speech flow
+    while keeping chunks under the specified word limit for optimal
+    TTS processing and memory usage.
+    
+    Args:
+        text (str): Input text to be chunked
+        max_words (int): Maximum words per chunk (default: 50)
+        
+    Returns:
+        list[str]: List of text chunks ready for TTS processing
     """
     # Split text into sentences using regex to handle multiple punctuation marks
     sentences = re.split(r'([.!?]+\s*)', text)
@@ -152,7 +294,7 @@ def chunk_text_by_sentences(text, max_words=50):
             i += 1
             continue
             
-        # Add punctuation if it exists
+        # Add punctuation if it exists in the next element
         if i + 1 < len(sentences) and re.match(r'[.!?]+\s*', sentences[i + 1]):
             sentence += sentences[i + 1]
             i += 2
@@ -168,6 +310,7 @@ def chunk_text_by_sentences(text, max_words=50):
             current_chunk = sentence
             current_word_count = sentence_words
         else:
+            # Add sentence to current chunk
             current_chunk += " " + sentence if current_chunk else sentence
             current_word_count += sentence_words
     
@@ -179,32 +322,46 @@ def chunk_text_by_sentences(text, max_words=50):
 
 def save_audio_chunks(audio_chunks, sample_rate, project_name, output_dir="audiobook_projects"):
     """
-    Save audio chunks as numbered WAV files
+    Save generated audio chunks as numbered WAV files.
+    
+    Creates a project directory and saves each audio chunk as a sequentially
+    numbered WAV file. Handles project name sanitization and directory creation.
+    
+    Args:
+        audio_chunks (list): List of audio numpy arrays to save
+        sample_rate (int): Audio sample rate for WAV file headers
+        project_name (str): Name for the project directory and file prefix
+        output_dir (str): Base directory for audiobook projects
+        
+    Returns:
+        tuple: (saved_files_list, project_directory_path)
     """
+    # Handle empty or invalid project names
     if not project_name.strip():
         project_name = "untitled_audiobook"
     
-    # Sanitize project name
+    # Sanitize project name for filesystem compatibility
     safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
     safe_project_name = safe_project_name.replace(' ', '_')
     
-    # Create output directory
+    # Create output directory structure
     project_dir = os.path.join(output_dir, safe_project_name)
     os.makedirs(project_dir, exist_ok=True)
     
     saved_files = []
     
+    # Save each chunk as a numbered WAV file
     for i, audio_chunk in enumerate(audio_chunks, 1):
-        filename = f"{safe_project_name}_{i:03d}.wav"
+        filename = f"{safe_project_name}_{i:03d}.wav"  # Zero-padded numbering
         filepath = os.path.join(project_dir, filename)
         
-        # Save as WAV file
+        # Save as WAV file with proper format settings
         with wave.open(filepath, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setnchannels(1)      # Mono audio
+            wav_file.setsampwidth(2)      # 16-bit depth
             wav_file.setframerate(sample_rate)
             
-            # Convert float32 to int16
+            # Convert float32 audio data to int16 for WAV format
             audio_int16 = (audio_chunk * 32767).astype(np.int16)
             wav_file.writeframes(audio_int16.tobytes())
         
@@ -213,12 +370,34 @@ def save_audio_chunks(audio_chunks, sample_rate, project_name, output_dir="audio
     return saved_files, project_dir
 
 def ensure_voice_library_exists(voice_library_path):
-    """Ensure the voice library directory exists"""
+    """
+    Ensure the voice library directory exists.
+    
+    Creates the voice library directory if it doesn't exist, including
+    any necessary parent directories.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        
+    Returns:
+        str: The voice library path (for chaining)
+    """
     Path(voice_library_path).mkdir(parents=True, exist_ok=True)
     return voice_library_path
 
 def get_voice_profiles(voice_library_path):
-    """Get list of saved voice profiles"""
+    """
+    Get list of saved voice profiles from the voice library.
+    
+    Scans the voice library directory for valid voice profile folders
+    and loads their configuration data.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        
+    Returns:
+        list[dict]: List of voice profile dictionaries with metadata
+    """
     if not os.path.exists(voice_library_path):
         return []
     
@@ -238,20 +417,43 @@ def get_voice_profiles(voice_library_path):
                         'config': config
                     })
                 except:
+                    # Skip corrupted profile configurations
                     continue
     return profiles
 
 def get_voice_choices(voice_library_path):
-    """Get voice choices for dropdown with display names"""
+    """
+    Get voice choices for dropdown with display names (includes manual input).
+    
+    Creates a list of voice options for UI dropdowns, including a manual
+    input option for ad-hoc voice uploads.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        
+    Returns:
+        list[tuple]: List of (display_text, value) tuples for dropdown options
+    """
     profiles = get_voice_profiles(voice_library_path)
-    choices = [("Manual Input (Upload Audio)", None)]  # Default option
+    choices = [("Manual Input (Upload Audio)", None)]  # Default option for custom voices
     for profile in profiles:
         display_text = f"🎭 {profile['display_name']} ({profile['name']})"
         choices.append((display_text, profile['name']))
     return choices
 
 def get_audiobook_voice_choices(voice_library_path):
-    """Get voice choices for audiobook creation (no manual input option)"""
+    """
+    Get voice choices for audiobook creation (no manual input option).
+    
+    Creates a list of voice options specifically for audiobook generation,
+    excluding manual input since audiobooks require consistent voice profiles.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        
+    Returns:
+        list[tuple]: List of (display_text, value) tuples for voice selection
+    """
     profiles = get_voice_profiles(voice_library_path)
     choices = []
     if not profiles:
@@ -263,11 +465,23 @@ def get_audiobook_voice_choices(voice_library_path):
     return choices
 
 def load_text_file(file_path):
-    """Load text from uploaded file"""
+    """
+    Load text content from an uploaded file.
+    
+    Handles file reading with multiple encoding fallbacks to ensure
+    compatibility with various text file formats and encodings.
+    
+    Args:
+        file_path (str): Path to the uploaded text file
+        
+    Returns:
+        tuple: (file_content, status_message) - Content and loading status
+    """
     if file_path is None:
         return "No file uploaded", "❌ Please upload a text file"
     
     try:
+        # Primary attempt with UTF-8 encoding
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
@@ -275,6 +489,7 @@ def load_text_file(file_path):
         if not content.strip():
             return "", "❌ File is empty"
         
+        # Generate statistics for user feedback
         word_count = len(content.split())
         char_count = len(content)
         
@@ -284,7 +499,7 @@ def load_text_file(file_path):
         
     except UnicodeDecodeError:
         try:
-            # Try with different encoding
+            # Fallback to latin-1 encoding for compatibility
             with open(file_path, 'r', encoding='latin-1') as f:
                 content = f.read()
             word_count = len(content.split())
@@ -297,9 +512,23 @@ def load_text_file(file_path):
         return "", f"❌ Error loading file: {str(e)}"
 
 def validate_audiobook_input(text_content, selected_voice, project_name):
-    """Validate inputs for audiobook creation"""
+    """
+    Validate user inputs for audiobook creation.
+    
+    Performs comprehensive validation of required inputs and provides
+    user-friendly feedback for any issues that need to be resolved.
+    
+    Args:
+        text_content (str): Text content for the audiobook
+        selected_voice (str): Selected voice profile name
+        project_name (str): Name for the audiobook project
+        
+    Returns:
+        tuple: (button_state, status_message, audio_component_state)
+    """
     issues = []
     
+    # Check for required inputs
     if not text_content or not text_content.strip():
         issues.append("📝 Text content is required")
     
@@ -309,9 +538,11 @@ def validate_audiobook_input(text_content, selected_voice, project_name):
     if not project_name or not project_name.strip():
         issues.append("📁 Project name is required")
     
+    # Validate text length
     if text_content and len(text_content.strip()) < 10:
         issues.append("📏 Text is too short (minimum 10 characters)")
     
+    # Return validation results
     if issues:
         return (
             gr.Button("🎵 Create Audiobook", variant="primary", size="lg", interactive=False),
@@ -319,6 +550,7 @@ def validate_audiobook_input(text_content, selected_voice, project_name):
             gr.Audio(visible=False)
         )
     
+    # Generate preview statistics
     word_count = len(text_content.split())
     chunks = chunk_text_by_sentences(text_content)
     chunk_count = len(chunks)
@@ -330,7 +562,19 @@ def validate_audiobook_input(text_content, selected_voice, project_name):
     )
 
 def get_voice_config(voice_library_path, voice_name):
-    """Get voice configuration for audiobook generation"""
+    """
+    Retrieve voice configuration settings for audiobook generation.
+    
+    Loads voice profile configuration including audio sample path and
+    TTS generation parameters. Handles name sanitization for compatibility.
+    
+    Args:
+        voice_library_path (str): Path to the voice library directory
+        voice_name (str): Name of the voice profile to load
+        
+    Returns:
+        dict or None: Voice configuration dictionary or None if not found
+    """
     if not voice_name:
         return None
     
@@ -348,12 +592,14 @@ def get_voice_config(voice_library_path, voice_name):
                 with open(config_file, 'r') as f:
                     config = json.load(f)
                 
+                # Locate the audio sample file
                 audio_file = None
                 if config.get('audio_file'):
                     audio_path = os.path.join(profile_dir, config['audio_file'])
                     if os.path.exists(audio_path):
                         audio_file = audio_path
                 
+                # Return configuration with defaults for missing values
                 return {
                     'audio_file': audio_file,
                     'exaggeration': config.get('exaggeration', 0.5),
@@ -368,13 +614,26 @@ def get_voice_config(voice_library_path, voice_name):
     return None
 
 def clear_gpu_memory():
-    """Clear GPU memory cache to prevent CUDA errors"""
+    """
+    Clear GPU memory cache to prevent CUDA out-of-memory errors.
+    
+    Frees up GPU memory by clearing PyTorch's cache and synchronizing
+    CUDA operations. Essential for long-running audiobook generation.
+    """
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        torch.cuda.empty_cache()    # Clear memory cache
+        torch.cuda.synchronize()    # Wait for all operations to complete
 
 def check_gpu_memory():
-    """Check GPU memory status for troubleshooting"""
+    """
+    Check current GPU memory usage for troubleshooting.
+    
+    Provides memory usage statistics to help diagnose CUDA memory issues
+    and optimize processing parameters.
+    
+    Returns:
+        str: Human-readable memory usage report
+    """
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated()
         cached = torch.cuda.memory_reserved()
@@ -383,7 +642,18 @@ def check_gpu_memory():
 
 def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
     """
-    Adaptive text chunking that reduces chunk size if CUDA errors occur
+    Adaptive text chunking that adjusts size based on processing constraints.
+    
+    Reduces chunk size for multi-voice processing to minimize memory pressure
+    and improve stability when CUDA errors are likely.
+    
+    Args:
+        text (str): Text content to chunk
+        max_words (int): Maximum words per chunk
+        reduce_on_error (bool): Whether to reduce chunk size preventively
+        
+    Returns:
+        list[str]: List of text chunks optimized for processing
     """
     if reduce_on_error:
         # Start with smaller chunks for multi-voice to reduce memory pressure
@@ -392,10 +662,30 @@ def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
     return chunk_text_by_sentences(text, max_words)
 
 def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3):
-    """Generate audio with retry logic for CUDA errors"""
+    """
+    Generate audio with retry logic for handling CUDA errors.
+    
+    Implements resilient audio generation with automatic retry on CUDA-related
+    failures. Includes memory cleanup between attempts to improve success rate.
+    
+    Args:
+        model: ChatterboxTTS model instance
+        text (str): Text content to convert to speech
+        audio_prompt_path (str): Path to voice sample file
+        exaggeration (float): Voice characteristic amplification
+        temperature (float): Generation randomness factor
+        cfg_weight (float): Classifier-free guidance weight
+        max_retries (int): Maximum number of retry attempts
+        
+    Returns:
+        torch.Tensor: Generated audio waveform
+        
+    Raises:
+        RuntimeError: When all retry attempts fail
+    """
     for retry in range(max_retries):
         try:
-            # Clear memory before generation
+            # Clear memory before generation (especially important on retries)
             if retry > 0:
                 clear_gpu_memory()
             
@@ -434,17 +724,57 @@ def create_audiobook(
     autosave_interval: int = 10
 ) -> tuple:
     """
-    Create audiobook from text using selected voice with smart chunking, autosave every N chunks, and resume support.
+    Create a complete audiobook from text using a selected voice profile.
+    
+    This is the main orchestration function for single-voice audiobook generation.
+    It handles the complete pipeline from text input to final audio output, including
+    intelligent chunking, resume functionality, autosave, and volume normalization.
+    
+    Pipeline Overview:
+    1. Input validation and voice configuration loading
+    2. Text chunking into optimal TTS segments
+    3. Project directory setup and resume logic
+    4. Incremental audio generation with error handling
+    5. Real-time chunk saving and progress tracking
+    6. Volume normalization (if enabled in voice profile)
+    7. Project metadata persistence for regeneration
+    8. Final audio combining and statistics reporting
+    
+    Resume Functionality:
+    - Scans project directory for existing chunk files
+    - Loads completed audio chunks into memory
+    - Resumes generation from first missing chunk
+    - Maintains audio continuity across resume sessions
+    
+    Error Handling:
+    - GPU memory management between chunks
+    - Automatic retry logic via generate_with_retry()
+    - Graceful failure with detailed error messages
+    - Project state preservation on partial completion
+    
     Args:
-        model: TTS model
-        text_content: Full text
-        voice_library_path: Path to voice library
-        selected_voice: Voice name
-        project_name: Project name
-        resume: If True, resume from last saved chunk
-        autosave_interval: Chunks per autosave (default 10)
+        model: ChatterboxTTS model instance (will auto-load if None)
+        text_content (str): Complete text content for audiobook
+        voice_library_path (str): Path to voice library directory
+        selected_voice (str): Voice profile name to use for generation
+        project_name (str): Unique name for this audiobook project
+        resume (bool): If True, resume from last completed chunk
+        autosave_interval (int): Save project metadata every N chunks
+        
     Returns:
-        (sample_rate, combined_audio), status_message
+        tuple: ((sample_rate, combined_audio_array), status_message)
+               Returns (None, error_message) on failure
+               
+    Data Flow:
+        text_content → chunks[] → audio_chunks[] → combined_audio
+        
+    File Structure Created:
+        audiobook_projects/
+        ├── {project_name}/
+        │   ├── {project_name}_001.wav  # Individual chunk files
+        │   ├── {project_name}_002.wav
+        │   ├── ...
+        │   └── project_metadata.json   # Project configuration & resume data
     """
     import numpy as np
     import os
@@ -452,72 +782,85 @@ def create_audiobook(
     import wave
     from typing import List
 
+    # === PHASE 1: INPUT VALIDATION ===
     if not text_content or not selected_voice or not project_name:
         return None, "❌ Missing required fields"
 
-    # Get voice configuration
+    # === PHASE 2: VOICE CONFIGURATION LOADING ===
     voice_config = get_voice_config(voice_library_path, selected_voice)
     if not voice_config:
         return None, f"❌ Could not load voice configuration for '{selected_voice}'"
     if not voice_config['audio_file']:
         return None, f"❌ No audio file found for voice '{voice_config['display_name']}'"
 
-    # Prepare chunking
+    # === PHASE 3: TEXT CHUNKING AND PREPARATION ===
     chunks = chunk_text_by_sentences(text_content)
     total_chunks = len(chunks)
     if total_chunks == 0:
         return None, "❌ No text chunks to process"
 
-    # Project directory
+    # === PHASE 4: PROJECT DIRECTORY SETUP ===
+    # Sanitize project name for filesystem compatibility
     safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
     project_dir = os.path.join("audiobook_projects", safe_project_name)
     os.makedirs(project_dir, exist_ok=True)
 
-    # Resume logic: find already completed chunk files
+    # === PHASE 5: RESUME LOGIC - DETECT COMPLETED CHUNKS ===
+    # Scan for existing chunk files to support resume functionality
     completed_chunks = set()
     chunk_filenames = [f"{safe_project_name}_{i+1:03d}.wav" for i in range(total_chunks)]
     for idx, fname in enumerate(chunk_filenames):
         if os.path.exists(os.path.join(project_dir, fname)):
             completed_chunks.add(idx)
 
-    # If resuming, only process missing chunks
+    # Determine starting point based on resume flag and existing chunks
     start_idx = 0
     if resume and completed_chunks:
-        # Find first missing chunk
+        # Find first missing chunk index
         for i in range(total_chunks):
             if i not in completed_chunks:
                 start_idx = i
                 break
         else:
+            # All chunks already exist
             return None, "✅ All chunks already completed. Nothing to resume."
     else:
+        # Start from beginning (normal generation or no resume)
         start_idx = 0
 
-    # Initialize model if needed
+    # === PHASE 6: MODEL INITIALIZATION ===
     if model is None:
         model = ChatterboxTTS.from_pretrained(DEVICE)
 
+    # === PHASE 7: AUDIO PROCESSING INITIALIZATION ===
     audio_chunks: List[np.ndarray] = []
     status_updates = []
-    clear_gpu_memory()
+    clear_gpu_memory()  # Clean slate for generation
 
-    # For resume, load already completed audio
+    # === PHASE 8: LOAD EXISTING CHUNKS FOR RESUME ===
+    # Load already completed audio chunks to maintain continuity
     for i in range(start_idx):
         fname = os.path.join(project_dir, chunk_filenames[i])
         with wave.open(fname, 'rb') as wav_file:
             frames = wav_file.readframes(wav_file.getnframes())
+            # Convert from int16 WAV format back to float32 for processing
             audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32767.0
             audio_chunks.append(audio_data)
 
-    # Process missing chunks
+    # === PHASE 9: MAIN GENERATION LOOP ===
+    # Process each missing chunk with comprehensive error handling
     for i in range(start_idx, total_chunks):
         if i in completed_chunks:
-            continue  # Already done
+            continue  # Skip already completed chunks
+            
         chunk = chunks[i]
         try:
+            # Progress reporting for user feedback
             chunk_words = len(chunk.split())
             status_msg = f"🎵 Processing chunk {i+1}/{total_chunks}\n🎭 Voice: {voice_config['display_name']}\n📝 Chunk {i+1}: {chunk_words} words\n📊 Progress: {i+1}/{total_chunks} chunks"
             status_updates.append(status_msg)
+            
+            # Generate audio using retry logic for stability
             wav = generate_with_retry(
                 model,
                 chunk,
@@ -528,7 +871,7 @@ def create_audiobook(
             )
             audio_np = wav.squeeze(0).cpu().numpy()
             
-            # Apply volume normalization if enabled in voice profile
+            # === VOLUME NORMALIZATION (if enabled in voice profile) ===
             if voice_config.get('normalization_enabled', False):
                 target_level = voice_config.get('target_level_db', -18.0)
                 try:
@@ -536,28 +879,36 @@ def create_audiobook(
                     level_info = analyze_audio_level(audio_np, model.sr)
                     current_level = level_info['rms_db']
                     
-                    # Normalize audio
+                    # Apply normalization to target level
                     audio_np = normalize_audio_to_target(audio_np, current_level, target_level)
                     print(f"🎚️ Chunk {i+1}: Volume normalized from {current_level:.1f}dB to {target_level:.1f}dB")
                 except Exception as e:
                     print(f"⚠️ Volume normalization failed for chunk {i+1}: {str(e)}")
             
+            # Add to audio chunks collection
             audio_chunks.append(audio_np)
-            # Save this chunk immediately
+            
+            # === IMMEDIATE CHUNK PERSISTENCE ===
+            # Save each chunk immediately to enable resume functionality
             fname = os.path.join(project_dir, chunk_filenames[i])
             with wave.open(fname, 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
+                wav_file.setnchannels(1)      # Mono audio
+                wav_file.setsampwidth(2)      # 16-bit depth
                 wav_file.setframerate(model.sr)
+                # Convert float32 back to int16 for WAV storage
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
+                
+            # Clean up GPU resources after each chunk
             del wav
             clear_gpu_memory()
+            
         except Exception as chunk_error:
             return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
-        # Autosave every N chunks
+            
+        # === PERIODIC AUTOSAVE OF PROJECT METADATA ===
         if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
-            # Save project metadata
+            # Prepare voice information for metadata storage
             voice_info = {
                 'voice_name': selected_voice,
                 'display_name': voice_config['display_name'],
@@ -799,7 +1150,8 @@ def parse_multi_voice_text(text):
     """
     import re
     
-    # Split text by voice tags but keep the tags
+    # Split text by voice tags but keep the tags in the results for processing
+    # Pattern captures [voice_name] tags while preserving them in split results
     pattern = r'(\[([^\]]+)\])'
     parts = re.split(pattern, text)
     
@@ -814,15 +1166,16 @@ def parse_multi_voice_text(text):
             i += 1
             continue
             
-        # Check if this is a voice tag
+        # Check if this part is a voice tag in [voice_name] format
         if part.startswith('[') and part.endswith(']'):
-            # This is a voice tag
+            # Extract voice name by removing brackets
             current_voice = part[1:-1]  # Remove brackets
             i += 1
         else:
-            # This is text content
+            # This is dialogue content that follows a voice tag
             if part and current_voice:
                 # Clean the text by removing character name if it matches the voice tag
+                # This handles cases like "[sarah] Sarah: Hello" -> "Hello"
                 cleaned_text = clean_character_name_from_text(part, current_voice)
                 # Only add non-empty segments after cleaning
                 if cleaned_text.strip():
@@ -838,17 +1191,34 @@ def parse_multi_voice_text(text):
 
 def clean_character_name_from_text(text, voice_name):
     """
-    Remove character name from the beginning of text if it matches the voice name
-    Handles various formats like 'P1', 'P1:', 'P1 -', etc.
+    Remove character name from the beginning of text if it matches the voice name.
+    
+    Handles various character name formats and punctuation patterns commonly found
+    in dialogue text. This prevents redundant character identification in speech.
+    
+    Supported Patterns:
+        - "Character: dialogue" -> "dialogue"
+        - "Character - dialogue" -> "dialogue"  
+        - "Character. dialogue" -> "dialogue"
+        - "Character | dialogue" -> "dialogue"
+        - "Character dialogue" -> "dialogue"
+        
+    Args:
+        text (str): Raw dialogue text that may contain character name
+        voice_name (str): Character/voice name to remove from text
+        
+    Returns:
+        str: Cleaned dialogue text with character name removed
     """
     text = text.strip()
     
-    # If the entire text is just the voice name (with possible punctuation), return empty
+    # Special case: if the entire text is just the voice name (with punctuation), return empty
+    # This handles lines like "[sarah] Sarah:" or "[john] John."
     if text.lower().replace(':', '').replace('.', '').replace('-', '').strip() == voice_name.lower():
         print(f"[DEBUG] Text is just the voice name '{voice_name}', returning empty")
         return ""
     
-    # Create variations of the voice name to check for
+    # Create comprehensive variations of the voice name for flexible matching
     voice_variations = [
         voice_name,                    # af_sarah
         voice_name.upper(),            # AF_SARAH  
@@ -1476,7 +1846,7 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
             [],
             empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
             gr.Button("🔍 Validate Voice Assignments", interactive=False),
-            status
+            "❌ No voices in library"
         )
     
     # Get available voices for dropdown choices
@@ -5929,4 +6299,3 @@ if __name__ == "__main__":
         max_size=50,
         default_concurrency_limit=1,
     ).launch(share=True)
-
