@@ -44,10 +44,10 @@ def punc_norm(text: str) -> str:
         ("—", "-"),
         ("–", "-"),
         (" ,", ","),
-        ("“", "\""),
-        ("”", "\""),
-        ("‘", "'"),
-        ("’", "'"),
+        (""", "\""),
+        (""", "\""),
+        ("'", "'"),
+        ("'", "'"),
     ]
     for old_char_sequence, new_char in punc_to_replace:
         text = text.replace(old_char_sequence, new_char)
@@ -204,24 +204,23 @@ class ChatterboxTTS:
             emotion_adv=exaggeration * torch.ones(1, 1, 1),
         ).to(device=self.device)
         self.conds = Conditionals(t3_cond, s3gen_ref_dict)
+        return self.conds
 
     def generate(
         self,
         text,
-        audio_prompt_path=None,
+        conds,
         exaggeration=0.5,
         cfg_weight=0.5,
         temperature=0.8,
+        repetition_penalty=1.2,
+        min_p=0.05,
+        top_p=1.0,
     ):
-        if audio_prompt_path:
-            self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
-        else:
-            assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
-
         # Update exaggeration if needed
-        if exaggeration != self.conds.t3.emotion_adv[0, 0, 0]:
-            _cond: T3Cond = self.conds.t3
-            self.conds.t3 = T3Cond(
+        if exaggeration != conds.t3.emotion_adv[0, 0, 0]:
+            _cond: T3Cond = conds.t3
+            conds.t3 = T3Cond(
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
                 emotion_adv=exaggeration * torch.ones(1, 1, 1),
@@ -241,16 +240,18 @@ class ChatterboxTTS:
 
         with torch.inference_mode():
             speech_tokens = self.t3.inference(
-                t3_cond=self.conds.t3,
+                t3_cond=conds.t3,
                 text_tokens=text_tokens,
-                max_new_tokens=1000,  # TODO: use the value in config
+                max_new_tokens=1000,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
+                repetition_penalty=repetition_penalty,
+                min_p=min_p,
+                top_p=top_p,
             )
             # Extract only the conditional batch.
             speech_tokens = speech_tokens[0]
 
-            # TODO: output becomes 1D
             speech_tokens = drop_invalid_tokens(speech_tokens)
             
             speech_tokens = speech_tokens[speech_tokens < 6561]
@@ -259,7 +260,7 @@ class ChatterboxTTS:
 
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
-                ref_dict=self.conds.gen,
+                ref_dict=conds.gen,
             )
             wav = wav.squeeze(0).detach().cpu().numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)

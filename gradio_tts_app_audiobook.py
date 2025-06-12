@@ -54,6 +54,36 @@ except ImportError as e:
 # Automatically detect the best available device for optimal performance
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# --- Core Application State for Stateless Generation ---
+VOICE_CONDS_CACHE = {}
+
+def get_or_create_conds(model, audio_prompt_path, exaggeration, force_recreate=False):
+    """
+    Get voice conditioning from cache or create and cache it.
+    This is the core of the stateless fix, ensuring each voice has its own,
+    isolated conditioning data.
+    """
+    # Validate audio_prompt_path
+    if not audio_prompt_path:
+        raise ValueError("❌ Error: audio_prompt_path cannot be None or empty. Please select a voice file.")
+    
+    if not os.path.exists(audio_prompt_path):
+        raise ValueError(f"❌ Error: Audio file not found: {audio_prompt_path}")
+    
+    cache_key = (os.path.abspath(audio_prompt_path), exaggeration, model.device)
+    if cache_key in VOICE_CONDS_CACHE and not force_recreate:
+        return VOICE_CONDS_CACHE[cache_key]
+    
+    print(f"🔧 Creating voice conditions for {os.path.basename(audio_prompt_path)} (exag: {exaggeration})")
+    conds = model.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
+    VOICE_CONDS_CACHE[cache_key] = conds
+    return conds
+
+print(f"🚀 ChatterBox starting with device: {DEVICE}")
+if DEVICE == "cuda":
+    print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
+    print(f"💾 GPU Memory: {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB")
+
 # Force CPU mode for multi-voice to avoid CUDA indexing errors
 # Multi-voice processing has known issues with CUDA memory management
 # and tensor indexing that are more stable on CPU
@@ -153,7 +183,7 @@ def load_model_cpu():
     model = ChatterboxTTS.from_pretrained("cpu")
     return model
 
-def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw):
+def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw, min_p, top_p, repetition_penalty):
     """
     Generate audio from text using the TTS model.
     
@@ -180,15 +210,26 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
     if seed_num != 0:
         set_seed(int(seed_num))
 
-    # Generate audio using the TTS model with specified parameters
-    wav = model.generate(
-        text,
-        audio_prompt_path=audio_prompt_path,
-        exaggeration=exaggeration,
-        temperature=temperature,
-        cfg_weight=cfgw,
-    )
-    return (model.sr, wav.squeeze(0).numpy())
+    # Generate audio using the TTS model with specified parameters (STATELESS)
+    # First, prepare the voice conditioning
+    try:
+        conds = get_or_create_conds(model, audio_prompt_path, exaggeration)
+        wav = model.generate(
+            text,
+            conds=conds,
+            exaggeration=exaggeration,
+            temperature=temperature,
+            cfg_weight=cfgw,
+            min_p=min_p,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+        return (model.sr, wav.squeeze(0).numpy())
+    except ValueError as e:
+        # Handle missing or invalid audio file gracefully
+        print(f"🚫 TTS Generation Error: {str(e)}")
+        # Return empty audio array to prevent crashing
+        return (model.sr if model else 24000, np.zeros(1000, dtype=np.float32))
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight):
     """
@@ -216,9 +257,10 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     if DEVICE == "cuda":
         try:
             clear_gpu_memory()  # Clear any residual GPU memory
+            conds = get_or_create_conds(model, audio_prompt_path, exaggeration)
             wav = model.generate(
                 text,
-                audio_prompt_path=audio_prompt_path,
+                conds=conds,
                 exaggeration=exaggeration,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
@@ -240,9 +282,10 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     try:
         # Load CPU model if needed
         cpu_model = ChatterboxTTS.from_pretrained("cpu")
+        conds = get_or_create_conds(cpu_model, audio_prompt_path, exaggeration)
         wav = cpu_model.generate(
             text,
-            audio_prompt_path=audio_prompt_path,
+            conds=conds,
             exaggeration=exaggeration,
             temperature=temperature,
             cfg_weight=cfg_weight,
@@ -265,7 +308,7 @@ def force_cpu_processing():
     # For multi-voice, always use CPU to avoid CUDA indexing issues
     return True
 
-def chunk_text_by_sentences(text, max_words=50):
+def chunk_text_by_sentences(text, max_words=80):
     """
     Split text into manageable chunks for TTS processing.
     
@@ -597,7 +640,7 @@ def get_voice_config(voice_library_path, voice_name):
                 if config.get('audio_file'):
                     audio_path = os.path.join(profile_dir, config['audio_file'])
                     if os.path.exists(audio_path):
-                        audio_file = audio_path
+                        audio_file = os.path.abspath(audio_path)
                 
                 # Return configuration with defaults for missing values
                 return {
@@ -640,7 +683,7 @@ def check_gpu_memory():
         return f"GPU Memory - Allocated: {allocated//1024//1024}MB, Cached: {cached//1024//1024}MB"
     return "CUDA not available"
 
-def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
+def adaptive_chunk_text(text, max_words=80, reduce_on_error=True):
     """
     Adaptive text chunking that adjusts size based on processing constraints.
     
@@ -657,13 +700,13 @@ def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
     """
     if reduce_on_error:
         # Start with smaller chunks for multi-voice to reduce memory pressure
-        max_words = min(max_words, 35)
+        max_words = min(max_words, 60)
     
     return chunk_text_by_sentences(text, max_words)
 
-def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3):
+def generate_with_retry(model, text, conds, exaggeration, temperature, cfg_weight, max_retries=3):
     """
-    Generate audio with retry logic for handling CUDA errors.
+    Generate audio with retry logic for handling CUDA errors. (STATELESS)
     
     Implements resilient audio generation with automatic retry on CUDA-related
     failures. Includes memory cleanup between attempts to improve success rate.
@@ -671,7 +714,7 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
     Args:
         model: ChatterboxTTS model instance
         text (str): Text content to convert to speech
-        audio_prompt_path (str): Path to voice sample file
+        conds: Pre-prepared voice conditioning object
         exaggeration (float): Voice characteristic amplification
         temperature (float): Generation randomness factor
         cfg_weight (float): Classifier-free guidance weight
@@ -685,13 +728,13 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
     """
     for retry in range(max_retries):
         try:
-            # Clear memory before generation (especially important on retries)
+            # Clear memory before generation (only on retries to avoid performance overhead)
             if retry > 0:
                 clear_gpu_memory()
             
             wav = model.generate(
                 text,
-                audio_prompt_path=audio_prompt_path,
+                conds=conds,
                 exaggeration=exaggeration,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
@@ -720,6 +763,7 @@ def create_audiobook(
     voice_library_path: str,
     selected_voice: str,
     project_name: str,
+    seed: int = 0,
     resume: bool = False,
     autosave_interval: int = 10
 ) -> tuple:
@@ -860,15 +904,31 @@ def create_audiobook(
             status_msg = f"🎵 Processing chunk {i+1}/{total_chunks}\n🎭 Voice: {voice_config['display_name']}\n📝 Chunk {i+1}: {chunk_words} words\n📊 Progress: {i+1}/{total_chunks} chunks"
             status_updates.append(status_msg)
             
-            # Generate audio using retry logic for stability
+            # Generate audio using retry logic for stability (STATELESS)
+            chunk_start_time = time.time()
+            # Set seed for chunk generation - either user specified or random
+            if seed == 0:
+                chunk_seed = random.randint(1, 999999)
+                print(f"🎲 Chunk {i+1}: Using random seed {chunk_seed}")
+            else:
+                # Use base seed + chunk index for consistent but varied results per chunk
+                chunk_seed = seed + i
+                print(f"🎯 Chunk {i+1}: Using seed {chunk_seed} (base: {seed} + chunk: {i})")
+            set_seed(chunk_seed)
+            # Prepare voice conditioning once per chunk for stateless generation
+            conds = get_or_create_conds(model, voice_config['audio_file'], voice_config['exaggeration'])
             wav = generate_with_retry(
                 model,
                 chunk,
-                voice_config['audio_file'],
+                conds,
                 voice_config['exaggeration'],
                 voice_config['temperature'],
                 voice_config['cfg_weight']
             )
+            chunk_time = time.time() - chunk_start_time
+            chunk_tokens_per_sec = (chunk_words * 8) / chunk_time  # Rough estimate
+            print(f"⚡ Chunk {i+1}: {chunk_words} words in {chunk_time:.2f}s ({chunk_tokens_per_sec:.1f} tokens/sec)")
+            print(f"🎭 Voice settings - CFG: {voice_config['cfg_weight']}, Temp: {voice_config['temperature']}, Exag: {voice_config['exaggeration']}")
             audio_np = wav.squeeze(0).cpu().numpy()
             
             # === VOLUME NORMALIZATION (if enabled in voice profile) ===
@@ -899,9 +959,11 @@ def create_audiobook(
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
                 
-            # Clean up GPU resources after each chunk
+            # Clean up GPU resources less frequently for better performance
             del wav
-            clear_gpu_memory()
+            # Only clear GPU memory every 5 chunks or on errors to avoid overhead
+            if (i + 1) % 5 == 0 or (i + 1) == total_chunks:
+                clear_gpu_memory()
             
         except Exception as chunk_error:
             return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
@@ -1257,7 +1319,7 @@ def clean_character_name_from_text(text, voice_name):
     # If no character name pattern found, return original text
     return text
 
-def chunk_multi_voice_segments(segments, max_words=50):
+def chunk_multi_voice_segments(segments, max_words=80):
     """
     Take voice segments and chunk them appropriately while preserving voice assignments
     Returns: [(voice_name, chunk_text), ...]
@@ -2318,8 +2380,6 @@ def create_continuous_playback_audio(project_name: str) -> tuple:
                             'text': chunk.get('text', ''),
                             'audio_file': audio_file
                         })
-                        
-                        combined_audio.append(audio_data)
                         current_time += chunk_duration
                         
                 except Exception as e:
@@ -2467,11 +2527,15 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             if not voice_config or not voice_config.get('audio_file'):
                 return None, "❌ Voice configuration not available"
             
-            # Generate audio
+            # Generate audio (STATELESS)
+            regen_seed = random.randint(1, 999999)
+            set_seed(regen_seed)
+            print(f"🎲 Sample regeneration: Using random seed {regen_seed}")
+            conds = get_or_create_conds(model, voice_config['audio_file'], voice_config.get('exaggeration', 0.5))
             wav = generate_with_retry(
                 model,
                 text_to_regenerate,
-                voice_config['audio_file'],
+                conds,
                 voice_config.get('exaggeration', 0.5),
                 voice_config.get('temperature', 0.8),
                 voice_config.get('cfg_weight', 0.5)
@@ -2492,10 +2556,14 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             if not voice_config or not voice_config.get('audio_file'):
                 return None, f"❌ Voice configuration not available for '{first_voice}'"
             
+            regen_seed = random.randint(1, 999999)
+            set_seed(regen_seed)
+            print(f"🎲 Multi-voice sample regeneration: Using random seed {regen_seed}")
+            conds = get_or_create_conds(model, voice_config['audio_file'], voice_config.get('exaggeration', 0.5))
             wav = generate_with_retry(
                 model,
                 text_to_regenerate,
-                voice_config['audio_file'],
+                conds,
                 voice_config.get('exaggeration', 0.5),
                 voice_config.get('temperature', 0.8),
                 voice_config.get('cfg_weight', 0.5)
@@ -2647,18 +2715,85 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
         return None, "❌ No text available for regeneration"
     
     try:
+        print(f"[DEBUG] Regenerating chunk {chunk_num} for project '{project_name}'")
+        print(f"[DEBUG] Voice library path: {voice_library_path}")
+        print(f"[DEBUG] Custom text: '{custom_text}'")
+        
         project_type = chunk['project_type']
+        print(f"[DEBUG] Project type: {project_type}")
         
         if project_type == 'single_voice':
             # Single voice project
             voice_config = chunk['voice_info']
+            print(f"[DEBUG] Single voice config: {voice_config}")
             if not voice_config or not voice_config.get('audio_file'):
+                print("[DEBUG] Error: Voice configuration or audio file not available.")
                 return None, "❌ Voice configuration not available"
             
+            audio_file_path = voice_config['audio_file']
+            print(f"[DEBUG] Audio file path from config: {audio_file_path}")
+            
+            if not os.path.exists(audio_file_path):
+                print(f"[DEBUG] Path does not exist. Current working dir: {os.getcwd()}")
+                print(f"🔧 INFO: Audio file not found at '{audio_file_path}'. Attempting to fix path for legacy project.")
+                
+                # For single voice, we need to get the voice name from the voice_config
+                voice_name = voice_config.get('voice_name') or voice_config.get('display_name', 'Unknown')
+                print(f"[DEBUG] Trying to get voice config for voice: '{voice_name}'")
+                
+                new_voice_config = get_voice_config(voice_library_path, voice_name)
+                print(f"[DEBUG] Fetched new voice config for '{voice_name}': {new_voice_config}")
+
+                if new_voice_config and new_voice_config.get('audio_file'):
+                    corrected_path = new_voice_config.get('audio_file')
+                    print(f"[DEBUG] Corrected path from get_voice_config: '{corrected_path}'")
+                    if os.path.exists(corrected_path):
+                        print(f"✅ Found audio file at '{corrected_path}'.")
+                        voice_config['audio_file'] = corrected_path  # Update in-memory config
+                        audio_file_path = corrected_path
+                    else:
+                        print(f"[DEBUG] Corrected path '{corrected_path}' also does not exist.")
+                else:
+                    print(f"[DEBUG] New voice config for '{voice_name}' did not contain a valid audio file.")
+                    
+                    # Try to find a base voice if this appears to be a temporary/modified voice name
+                    if '_temp_' in voice_name or voice_name.endswith('_volume'):
+                        # Try removing temporary suffixes to find the base voice
+                        base_voice_candidates = []
+                        if '_temp_volume' in voice_name:
+                            base_voice_candidates.append(voice_name.replace('_temp_volume', ''))
+                        if '_volume' in voice_name:
+                            base_voice_candidates.append(voice_name.replace('_volume', ''))
+                        if '_temp_' in voice_name:
+                            base_voice_candidates.append(voice_name.split('_temp_')[0])
+                            
+                        for candidate in base_voice_candidates:
+                            print(f"[DEBUG] Trying base voice candidate: '{candidate}'")
+                            candidate_config = get_voice_config(voice_library_path, candidate)
+                            if candidate_config and candidate_config.get('audio_file'):
+                                corrected_path = candidate_config.get('audio_file')
+                                print(f"[DEBUG] Found base voice '{candidate}' with path: '{corrected_path}'")
+                                if os.path.exists(corrected_path):
+                                    print(f"✅ Using base voice '{candidate}' at '{corrected_path}'.")
+                                    # Update voice config with base voice info but keep original settings
+                                    voice_config['audio_file'] = corrected_path
+                                    voice_config['voice_name'] = candidate
+                                    audio_file_path = corrected_path
+                                    break
+            
+            # Final check for the audio file
+            print(f"[DEBUG] Final audio file path before generation: '{audio_file_path}'")
+            if not os.path.exists(audio_file_path):
+                return None, f"❌ Audio file does not exist: {audio_file_path}"
+            
+            chunk_regen_seed = random.randint(1, 999999)
+            set_seed(chunk_regen_seed)
+            print(f"🎲 Chunk {chunk_num} regeneration (single-voice): Using random seed {chunk_regen_seed}")
+            conds = get_or_create_conds(model, audio_file_path, voice_config.get('exaggeration', 0.5))
             wav = generate_with_retry(
                 model,
                 text_to_regenerate,
-                voice_config['audio_file'],
+                conds,
                 voice_config.get('exaggeration', 0.5),
                 voice_config.get('temperature', 0.8),
                 voice_config.get('cfg_weight', 0.5)
@@ -2671,22 +2806,52 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
             voice_config = chunk.get('voice_config', {})
             character_name = chunk.get('character', 'unknown')
             assigned_voice = chunk.get('assigned_voice', 'unknown')
+            print(f"[DEBUG] Multi-voice chunk info: Character='{character_name}', Assigned Voice='{assigned_voice}'")
+            print(f"[DEBUG] Initial voice_config from chunk: {voice_config}")
             
             if not voice_config:
+                print("[DEBUG] Error: Voice configuration not found in chunk.")
                 return None, f"❌ Voice configuration not found for character '{character_name}' (assigned voice: '{assigned_voice}')"
             
             if not voice_config.get('audio_file'):
+                print("[DEBUG] Error: 'audio_file' not in voice_config.")
                 return None, f"❌ Audio file not found for character '{character_name}' (assigned voice: '{assigned_voice}')"
             
-            # Check if audio file actually exists
+            # Check if audio file actually exists, and if not, try to fix it for legacy projects
             audio_file_path = voice_config.get('audio_file')
+            print(f"[DEBUG] Audio file path from chunk config: '{audio_file_path}'")
+            
+            if not os.path.exists(audio_file_path):
+                print(f"[DEBUG] Path does not exist. Current working dir: {os.getcwd()}")
+                print(f"🔧 INFO: Audio file not found at '{audio_file_path}'. Attempting to fix path for legacy project.")
+                new_voice_config = get_voice_config(voice_library_path, assigned_voice)
+                print(f"[DEBUG] Fetched new voice config for '{assigned_voice}': {new_voice_config}")
+
+                if new_voice_config and new_voice_config.get('audio_file'):
+                    corrected_path = new_voice_config.get('audio_file')
+                    print(f"[DEBUG] Corrected path from get_voice_config: '{corrected_path}'")
+                    if os.path.exists(corrected_path):
+                        print(f"✅ Found audio file at '{corrected_path}'.")
+                        voice_config['audio_file'] = corrected_path  # Update in-memory config
+                        audio_file_path = corrected_path
+                    else:
+                        print(f"[DEBUG] Corrected path '{corrected_path}' also does not exist.")
+                else:
+                    print(f"[DEBUG] New voice config for '{assigned_voice}' did not contain a valid audio file.")
+            
+            # Final check for the audio file
+            print(f"[DEBUG] Final audio file path before generation: '{audio_file_path}'")
             if not os.path.exists(audio_file_path):
                 return None, f"❌ Audio file does not exist: {audio_file_path}"
             
+            chunk_regen_seed = random.randint(1, 999999)
+            set_seed(chunk_regen_seed)
+            print(f"🎲 Chunk {chunk_num} regeneration (multi-voice): Using random seed {chunk_regen_seed}")
+            conds = get_or_create_conds(model, audio_file_path, voice_config.get('exaggeration', 0.5))
             wav = generate_with_retry(
                 model,
                 text_to_regenerate,
-                voice_config['audio_file'],
+                conds,
                 voice_config.get('exaggeration', 0.5),
                 voice_config.get('temperature', 0.8),
                 voice_config.get('cfg_weight', 0.5)
@@ -3869,7 +4034,7 @@ def get_volume_normalization_status(enable_norm, target_db, audio_file):
 # =============================================================================
 
 def create_audiobook_with_volume_settings(model, text_content, voice_library_path, selected_voice, project_name, 
-                                         enable_norm=True, target_level=-18.0):
+                                         seed=0, enable_norm=True, target_level=-18.0):
     """Wrapper for create_audiobook that applies volume normalization settings"""
     # Get the voice config and temporarily apply volume settings
     voice_config = get_voice_config(voice_library_path, selected_voice)
@@ -3892,7 +4057,7 @@ def create_audiobook_with_volume_settings(model, text_content, voice_library_pat
         )
         
         # Use the temporary voice for audiobook creation
-        result = create_audiobook(model, text_content, voice_library_path, temp_voice_name, project_name)
+        result = create_audiobook(model, text_content, voice_library_path, temp_voice_name, project_name, seed)
         
         # Clean up temporary voice
         try:
@@ -3902,7 +4067,7 @@ def create_audiobook_with_volume_settings(model, text_content, voice_library_pat
         
         return result
     else:
-        return create_audiobook(model, text_content, voice_library_path, selected_voice, project_name)
+        return create_audiobook(model, text_content, voice_library_path, selected_voice, project_name, seed)
 
 def create_multi_voice_audiobook_with_volume_settings(model, text_content, voice_library_path, project_name, 
                                                      voice_assignments, enable_norm=True, target_level=-18.0):
@@ -4014,6 +4179,9 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                     with gr.Accordion("⚙️ Advanced Options", open=False):
                         seed_num = gr.Number(value=0, label="Random seed (0 for random)")
                         temp = gr.Slider(0.05, 5, step=.05, label="Temperature", value=.8)
+                        min_p = gr.Slider(0.00, 1.00, step=0.01, label="min_p | Newer Sampler. Recommend 0.02 > 0.1. Handles Higher Temperatures better. 0.00 Disables", value=0.05)
+                        top_p = gr.Slider(0.00, 1.00, step=0.01, label="top_p | Original Sampler. 1.0 Disables(recommended). Original 0.8", value=1.00)
+                        repetition_penalty = gr.Slider(1.00, 2.00, step=0.1, label="repetition_penalty", value=1.2)
 
                     with gr.Row():
                         run_btn = gr.Button("🎵 Generate Speech", variant="primary", size="lg")
@@ -4108,6 +4276,23 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 0.05, 5, step=.05,
                                 label="Temperature",
                                 value=0.8
+                            )
+                        
+                        with gr.Row():
+                            voice_min_p = gr.Slider(
+                                0.00, 1.00, step=0.01,
+                                label="min_p",
+                                value=0.05
+                            )
+                            voice_top_p = gr.Slider(
+                                0.00, 1.00, step=0.01,
+                                label="top_p",
+                                value=1.0
+                            )
+                            voice_repetition_penalty = gr.Slider(
+                                1.00, 2.00, step=0.1,
+                                label="repetition_penalty",
+                                value=1.2
                             )
                     
                     # Volume Normalization Section
@@ -4252,6 +4437,16 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                             label="Project Name",
                             placeholder="e.g., my_first_audiobook",
                             info="Used for naming output files (project_001.wav, project_002.wav, etc.)"
+                        )
+                        
+                        # Seed Control for Reproducible Generation
+                        audiobook_seed = gr.Number(
+                            label="Random Seed (0 for random)",
+                            value=0,
+                            minimum=0,
+                            maximum=999999,
+                            step=1,
+                            info="Set specific seed for reproducible results, or 0 for random generation"
                         )
                         
                         # Volume Normalization Controls
@@ -5183,6 +5378,9 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             temp,
             seed_num,
             cfg_weight,
+            min_p,
+            top_p,
+            repetition_penalty,
         ],
         outputs=audio_output,
     )
@@ -5207,7 +5405,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     )
 
     test_voice_btn.click(
-        fn=lambda model, text, audio, exag, temp, cfg: generate(model, text, audio, exag, temp, 0, cfg),
+        fn=lambda model, text, audio, exag, temp, cfg: generate(model, text, audio, exag, temp, 0, cfg, 0.05, 1.0, 1.2),
         inputs=[model_state, test_text, voice_audio, voice_exaggeration, voice_temp, voice_cfg],
         outputs=test_audio_output
     )
@@ -5272,7 +5470,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     # Enhanced Audiobook Creation with chunking and saving
     process_btn.click(
         fn=create_audiobook_with_volume_settings,
-        inputs=[model_state, audiobook_text, voice_library_path_state, audiobook_voice_selector, project_name, enable_volume_norm, target_volume_level],
+        inputs=[model_state, audiobook_text, voice_library_path_state, audiobook_voice_selector, project_name, audiobook_seed, enable_volume_norm, target_volume_level],
         outputs=[audiobook_output, audiobook_status]
     ).then(
         fn=force_refresh_all_project_dropdowns,
