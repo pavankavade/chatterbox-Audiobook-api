@@ -6041,7 +6041,6 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         """Load project info and update UI fields for single-voice tab."""
         text, voice_info, proj_name, _, status = load_project_for_regeneration(project_name)
         # Try to extract voice name from voice_info string
-import re
         voice_match = re.search(r'\(([^)]+)\)', voice_info)
         selected_voice = None
         if voice_match:
