@@ -183,12 +183,48 @@ def load_model_cpu():
     model = ChatterboxTTS.from_pretrained("cpu")
     return model
 
+def concatenate_audio_chunks(audio_chunks: List[np.ndarray], sample_rate: int) -> np.ndarray:
+    """
+    Concatenate multiple audio chunks into a single audio array.
+    
+    Args:
+        audio_chunks (List[np.ndarray]): List of audio arrays to concatenate
+        sample_rate (int): Audio sample rate
+        
+    Returns:
+        np.ndarray: Concatenated audio array
+    """
+    if not audio_chunks:
+        return np.zeros(1000, dtype=np.float32)
+    
+    if len(audio_chunks) == 1:
+        return audio_chunks[0]
+    
+    # Add small silence between chunks for natural flow (0.2 seconds)
+    silence_duration = int(0.2 * sample_rate)
+    silence = np.zeros(silence_duration, dtype=np.float32)
+    
+    # Concatenate all chunks with silence in between
+    concatenated = []
+    for i, chunk in enumerate(audio_chunks):
+        # Ensure chunk is 1D
+        if chunk.ndim > 1:
+            chunk = chunk.squeeze()
+        concatenated.append(chunk)
+        
+        # Add silence between chunks (but not after the last one)
+        if i < len(audio_chunks) - 1:
+            concatenated.append(silence)
+    
+    return np.concatenate(concatenated)
+
 def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num, cfgw, min_p, top_p, repetition_penalty):
     """
-    Generate audio from text using the TTS model.
+    Generate audio from text using the TTS model with automatic chunking for longer text.
     
-    Core TTS generation function that converts text to speech using specified
-    voice characteristics and generation parameters.
+    Enhanced TTS generation function that automatically chunks longer text into
+    manageable segments, generates audio for each chunk, and concatenates them
+    into a single playable audio file.
     
     Args:
         model: ChatterboxTTS model instance (None will auto-load)
@@ -198,6 +234,9 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
         temperature (float): Randomness in generation (0.0-1.0)
         seed_num (int): Random seed for reproducible output (0 = random)
         cfgw (float): Classifier-free guidance weight for quality control
+        min_p (float): min_p sampling parameter
+        top_p (float): top_p sampling parameter  
+        repetition_penalty (float): Repetition penalty sampling parameter
         
     Returns:
         tuple: (sample_rate, audio_array) - Audio data ready for playback
@@ -210,25 +249,83 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
     if seed_num != 0:
         set_seed(int(seed_num))
 
-    # Generate audio using the TTS model with specified parameters (STATELESS)
-    # First, prepare the voice conditioning
     try:
+        # Prepare voice conditioning once for all chunks
         conds = get_or_create_conds(model, audio_prompt_path, exaggeration)
-        wav = model.generate(
-            text,
-            conds=conds,
-            exaggeration=exaggeration,
-            temperature=temperature,
-            cfg_weight=cfgw,
-            min_p=min_p,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-        )
-        return (model.sr, wav.squeeze(0).numpy())
+        
+        # Check if text needs chunking (more than ~80 words)
+        word_count = len(text.split())
+        max_words_per_chunk = 80
+        
+        if word_count <= max_words_per_chunk:
+            # Short text - generate normally without chunking
+            print(f"🎵 Generating audio for {word_count} words (single chunk)")
+            wav = model.generate(
+                text,
+                conds=conds,
+                exaggeration=exaggeration,
+                temperature=temperature,
+                cfg_weight=cfgw,
+                min_p=min_p,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+            )
+            return (model.sr, wav.squeeze(0).numpy())
+        else:
+            # Long text - chunk and concatenate
+            print(f"📚 Text is {word_count} words, chunking for better processing...")
+            
+            # Split text into chunks
+            chunks = chunk_text_by_sentences(text, max_words=max_words_per_chunk)
+            print(f"📋 Split into {len(chunks)} chunks")
+            
+            # Generate audio for each chunk
+            audio_chunks = []
+            for i, chunk in enumerate(chunks, 1):
+                print(f"🎵 Processing chunk {i}/{len(chunks)}: {len(chunk.split())} words")
+                
+                try:
+                    wav = model.generate(
+                        chunk,
+                        conds=conds,
+                        exaggeration=exaggeration,
+                        temperature=temperature,
+                        cfg_weight=cfgw,
+                        min_p=min_p,
+                        top_p=top_p,
+                        repetition_penalty=repetition_penalty,
+                    )
+                    # Convert to numpy and ensure it's 1D
+                    chunk_audio = wav.squeeze(0).numpy()
+                    if chunk_audio.ndim > 1:
+                        chunk_audio = chunk_audio.flatten()
+                    audio_chunks.append(chunk_audio)
+                    
+                except Exception as chunk_error:
+                    print(f"⚠️ Error processing chunk {i}: {str(chunk_error)}")
+                    # Continue with other chunks if one fails
+                    continue
+            
+            if not audio_chunks:
+                raise ValueError("All chunks failed to generate")
+            
+            # Concatenate all audio chunks with small silences between
+            print(f"🔗 Concatenating {len(audio_chunks)} audio chunks...")
+            final_audio = concatenate_audio_chunks(audio_chunks, model.sr)
+            
+            total_duration = len(final_audio) / model.sr
+            print(f"✅ Generated {total_duration:.1f} seconds of audio from {word_count} words")
+            
+            return (model.sr, final_audio)
+            
     except ValueError as e:
         # Handle missing or invalid audio file gracefully
         print(f"🚫 TTS Generation Error: {str(e)}")
         # Return empty audio array to prevent crashing
+        return (model.sr if model else 24000, np.zeros(1000, dtype=np.float32))
+    except Exception as e:
+        # Handle any other unexpected errors
+        print(f"🚫 Unexpected Error: {str(e)}")
         return (model.sr if model else 24000, np.zeros(1000, dtype=np.float32))
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight):
@@ -5944,7 +6041,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         """Load project info and update UI fields for single-voice tab."""
         text, voice_info, proj_name, _, status = load_project_for_regeneration(project_name)
         # Try to extract voice name from voice_info string
-        import re
+import re
         voice_match = re.search(r'\(([^)]+)\)', voice_info)
         selected_voice = None
         if voice_match:
@@ -6136,13 +6233,13 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     def auto_remove_dead_space(project_name: str, silence_threshold: float = -50.0, min_silence_duration: float = 0.5) -> tuple:
         """
         Automatically detect and remove dead space/silence from all audio chunks in a project.
-        
-        Args:
+    
+    Args:
             project_name: Name of the project to process
             silence_threshold: Volume threshold in dB below which audio is considered silence
             min_silence_duration: Minimum duration in seconds for silence to be considered removable
         
-        Returns:
+    Returns:
             Tuple of (success_message, processed_files_count, errors_list)
         """
         try:
