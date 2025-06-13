@@ -15,60 +15,6 @@ from typing import List
 import warnings
 warnings.filterwarnings("ignore")
 
-# Configure tqdm for better progress bar behavior
-import sys
-from contextlib import redirect_stdout, redirect_stderr
-from io import StringIO
-import os
-
-# Set environment variable to force tqdm to use single line updates
-os.environ['TQDM_DISABLE'] = '0'
-os.environ['TQDM_NCOLS'] = '80'
-
-# Monkey patch tqdm to ensure single line updates
-try:
-    import tqdm
-    original_tqdm = tqdm.tqdm
-    
-    class SingleLineTqdm(original_tqdm):
-        def __init__(self, *args, **kwargs):
-            # Force single line behavior
-            kwargs['dynamic_ncols'] = True
-            kwargs['ncols'] = 80
-            kwargs['leave'] = True
-            kwargs['position'] = 0
-            super().__init__(*args, **kwargs)
-    
-    # Replace tqdm with our single-line version
-    tqdm.tqdm = SingleLineTqdm
-    
-except ImportError:
-    pass
-
-# Import librosa for volume normalization
-try:
-    import librosa
-    LIBROSA_AVAILABLE = True
-except ImportError:
-    print("Warning: librosa not available - volume normalization will be disabled")
-    LIBROSA_AVAILABLE = False
-
-# Import scipy for signal processing
-try:
-    from scipy import signal
-    SCIPY_AVAILABLE = True
-except ImportError:
-    print("Warning: scipy not available - advanced audio processing will be limited")
-    SCIPY_AVAILABLE = False
-
-# Import soundfile for audio I/O
-try:
-    import soundfile as sf
-    SOUNDFILE_AVAILABLE = True
-except ImportError:
-    print("Warning: soundfile not available - some audio operations will be limited")
-    SOUNDFILE_AVAILABLE = False
-
 # Try importing the TTS module
 try:
     from src.chatterbox.tts import ChatterboxTTS
@@ -134,12 +80,9 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
     if seed_num != 0:
         set_seed(int(seed_num))
 
-    # Prepare conditionals from audio prompt
-    conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
-    
     wav = model.generate(
         text,
-        conds,
+        audio_prompt_path=audio_prompt_path,
         exaggeration=exaggeration,
         temperature=temperature,
         cfg_weight=cfgw,
@@ -153,12 +96,9 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     if DEVICE == "cuda":
         try:
             clear_gpu_memory()
-            # Prepare conditionals from audio prompt
-            conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
-            
             wav = model.generate(
                 text,
-                conds,
+                audio_prompt_path=audio_prompt_path,
                 exaggeration=exaggeration,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
@@ -178,12 +118,9 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     try:
         # Load CPU model if needed
         cpu_model = ChatterboxTTS.from_pretrained("cpu")
-        # Prepare conditionals from audio prompt
-        conds = cpu_model.prepare_conditionals(audio_prompt_path, exaggeration)
-        
         wav = cpu_model.generate(
             text,
-            conds,
+            audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
             temperature=temperature,
             cfg_weight=cfg_weight,
@@ -462,12 +399,9 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
             if retry > 0:
                 clear_gpu_memory()
             
-            # Prepare conditionals from audio prompt
-            conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
-            
             wav = model.generate(
                 text,
-                conds,
+                audio_prompt_path=audio_prompt_path,
                 exaggeration=exaggeration,
                 temperature=temperature,
                 cfg_weight=cfg_weight,
@@ -1086,12 +1020,9 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
             status_msg = f"🎵 Processing chunk {i}/{total_chunks}\n🎭 Voice: {voice_config['display_name']} ({voice_name})\n📝 Chunk {i}: {chunk_words} words\n📊 Progress: {i}/{total_chunks} chunks"
             
             # Generate audio for this chunk
-            # Prepare conditionals from audio prompt
-            conds = model.prepare_conditionals(voice_config['audio_file'], voice_config['exaggeration'])
-            
             wav = model.generate(
                 chunk_text,
-                conds,
+                audio_prompt_path=voice_config['audio_file'],
                 exaggeration=voice_config['exaggeration'],
                 temperature=voice_config['temperature'],
                 cfg_weight=voice_config['cfg_weight'],
@@ -1457,11 +1388,8 @@ def create_multi_voice_audiobook_with_assignments(
                 return None, None, f"❌ No audio file for voice '{voice_config['display_name']}'", None
             if not os.path.exists(voice_config['audio_file']):
                 return None, None, f"❌ Audio file not found: {voice_config['audio_file']}", None
-            # Prepare conditionals from audio prompt
-            conds = processing_model.prepare_conditionals(voice_config['audio_file'], voice_config['exaggeration'])
-            
             wav = processing_model.generate(
-                chunk_text, conds,
+                chunk_text, audio_prompt_path=voice_config['audio_file'],
                 exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
                 cfg_weight=voice_config['cfg_weight'])
             audio_np = wav.squeeze(0).cpu().numpy()
@@ -3453,21 +3381,17 @@ def analyze_audio_level(audio_data, sample_rate=24000):
         # LUFS (Loudness Units relative to Full Scale) - approximation
         # Apply K-weighting filter (simplified)
         try:
-            if SCIPY_AVAILABLE:
-                # High-shelf filter at 4kHz
-                sos_high = signal.butter(2, 4000, 'highpass', fs=sample_rate, output='sos')
-                filtered_high = signal.sosfilt(sos_high, audio_data)
-                
-                # High-frequency emphasis
-                sos_shelf = signal.butter(2, 1500, 'highpass', fs=sample_rate, output='sos')
-                filtered_shelf = signal.sosfilt(sos_shelf, filtered_high)
-                
-                # Mean square and convert to LUFS
-                ms = np.mean(filtered_shelf**2)
-                lufs = -0.691 + 10 * np.log10(ms + 1e-10)
-            else:
-                # Fallback if scipy not available
-                lufs = rms_db
+            # High-shelf filter at 4kHz
+            sos_high = signal.butter(2, 4000, 'highpass', fs=sample_rate, output='sos')
+            filtered_high = signal.sosfilt(sos_high, audio_data)
+            
+            # High-frequency emphasis
+            sos_shelf = signal.butter(2, 1500, 'highpass', fs=sample_rate, output='sos')
+            filtered_shelf = signal.sosfilt(sos_shelf, filtered_high)
+            
+            # Mean square and convert to LUFS
+            ms = np.mean(filtered_shelf**2)
+            lufs = -0.691 + 10 * np.log10(ms + 1e-10)
         except:
             # Fallback if filtering fails
             lufs = rms_db
@@ -3552,20 +3476,17 @@ def get_volume_normalization_status(enable_norm, target_db, audio_file):
         return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB when audio is uploaded</div>"
     
     try:
-        if LIBROSA_AVAILABLE:
-            audio_data, sample_rate = librosa.load(audio_file, sr=24000)
-            level_info = analyze_audio_level(audio_data, sample_rate)
-            current_rms = level_info['rms_db']
-            gain_needed = target_db - current_rms
-            
-            if abs(gain_needed) < 1:
-                return f"<div class='voice-status'>✅ Audio already close to target ({current_rms:.1f} dB)</div>"
-            elif gain_needed > 0:
-                return f"<div class='voice-status'>⬆️ Will boost by {gain_needed:.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
-            else:
-                return f"<div class='voice-status'>⬇️ Will reduce by {abs(gain_needed):.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
+        audio_data, sample_rate = librosa.load(audio_file, sr=24000)
+        level_info = analyze_audio_level(audio_data, sample_rate)
+        current_rms = level_info['rms_db']
+        gain_needed = target_db - current_rms
+        
+        if abs(gain_needed) < 1:
+            return f"<div class='voice-status'>✅ Audio already close to target ({current_rms:.1f} dB)</div>"
+        elif gain_needed > 0:
+            return f"<div class='voice-status'>⬆️ Will boost by {gain_needed:.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
         else:
-            return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB (librosa not available)</div>"
+            return f"<div class='voice-status'>⬇️ Will reduce by {abs(gain_needed):.1f} dB ({current_rms:.1f} → {target_db:.0f} dB)</div>"
     except:
         return f"<div class='voice-status'>🎯 Will normalize to {target_db:.0f} dB</div>"
 
@@ -3659,204 +3580,6 @@ def create_multi_voice_audiobook_with_volume_settings(model, text_content, voice
 
 # =============================================================================
 # END VOLUME NORMALIZATION WRAPPER FUNCTIONS  
-# =============================================================================
-
-# =============================================================================
-# BATCH PROCESSING FUNCTIONS
-# =============================================================================
-
-def load_text_files_batch(file_paths: list) -> tuple:
-    """
-    Load multiple text files for batch processing.
-    
-    Args:
-        file_paths: List of file paths to load
-        
-    Returns:
-        tuple: (list_of_contents, status_message)
-    """
-    if not file_paths:
-        return [], "No files uploaded"
-    
-    loaded_files = []
-    total_words = 0
-    
-    for i, file_path in enumerate(file_paths):
-        try:
-            content, status = load_text_file(file_path)
-            if content:
-                loaded_files.append({
-                    'content': content,
-                    'filename': os.path.basename(file_path),
-                    'words': len(content.split())
-                })
-                total_words += len(content.split())
-            else:
-                return [], f"❌ Error loading file {i+1}: {status}"
-        except Exception as e:
-            return [], f"❌ Error loading file {i+1}: {str(e)}"
-    
-    status_msg = f"✅ Loaded {len(loaded_files)} files ({total_words} total words)"
-    return loaded_files, status_msg
-
-def validate_batch_audiobook_input(file_list: list, selected_voice: str, project_name: str) -> tuple:
-    """
-    Validate inputs for batch audiobook creation.
-    
-    Args:
-        file_list: List of loaded file contents
-        selected_voice: Selected voice profile name
-        project_name: Base project name
-        
-    Returns:
-        tuple: (process_button_state, status_message, dummy_output)
-    """
-    if not file_list:
-        return gr.Button(interactive=False), "❌ No files loaded for batch processing", None
-    
-    if not selected_voice:
-        return gr.Button(interactive=False), "❌ Please select a voice profile", None
-    
-    if not project_name or not project_name.strip():
-        return gr.Button(interactive=False), "❌ Please enter a project name", None
-    
-    # Check if project name is valid
-    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
-    if not safe_project_name:
-        return gr.Button(interactive=False), "❌ Project name contains invalid characters", None
-    
-    total_files = len(file_list)
-    total_words = sum(f['words'] for f in file_list)
-    
-    status_msg = f"✅ Ready to process {total_files} files ({total_words} total words) with voice '{selected_voice}' as project '{project_name}'"
-    
-    return gr.Button(interactive=True), status_msg, None
-
-def create_batch_audiobook(
-    model,
-    file_list: list,
-    voice_library_path: str,
-    selected_voice: str,
-    project_name: str,
-    enable_norm: bool = True,
-    target_level: float = -18.0
-) -> tuple:
-    """
-    Create multiple audiobooks from a batch of files.
-    
-    Args:
-        model: TTS model instance
-        file_list: List of loaded file contents with metadata
-        voice_library_path: Path to voice library
-        selected_voice: Selected voice profile name
-        project_name: Base project name (will be suffixed with -1, -2, etc.)
-        enable_norm: Whether to enable volume normalization
-        target_level: Target volume level in dB
-        
-    Returns:
-        tuple: (last_audio_output, final_status_message)
-    """
-    if not file_list:
-        return None, "❌ No files to process"
-    
-    if not selected_voice:
-        return None, "❌ No voice selected"
-    
-    if not project_name or not project_name.strip():
-        return None, "❌ No project name provided"
-    
-    # Validate voice exists
-    voice_config = get_voice_config(voice_library_path, selected_voice)
-    if not voice_config:
-        return None, f"❌ Could not load voice configuration for '{selected_voice}'"
-    
-    total_files = len(file_list)
-    successful_projects = []
-    failed_projects = []
-    last_audio = None
-    
-    try:
-        # Process each file in the batch
-        for i, file_info in enumerate(file_list, 1):
-            try:
-                # Create project name with suffix
-                current_project_name = f"{project_name}-{i}"
-                
-                print(f"\n🎵 Processing file {i}/{total_files}: {file_info['filename']} -> {current_project_name}")
-                print(f"📝 Text length: {file_info['words']} words")
-                print("🔄 Generating audio chunks...")
-                
-                # Create audiobook for this file with visible progress
-                result = create_audiobook_with_volume_settings(
-                    model=model,
-                    text_content=file_info['content'],
-                    voice_library_path=voice_library_path,
-                    selected_voice=selected_voice,
-                    project_name=current_project_name,
-                    enable_norm=enable_norm,
-                    target_level=target_level
-                )
-                
-                if result and len(result) >= 2 and result[0] is not None:
-                    # Success
-                    last_audio = result[0]  # Keep the last successful audio for preview
-                    successful_projects.append({
-                        'name': current_project_name,
-                        'filename': file_info['filename'],
-                        'words': file_info['words']
-                    })
-                    print(f"✅ Completed: {current_project_name}")
-                else:
-                    # Failed
-                    error_msg = result[1] if result and len(result) > 1 else "Unknown error"
-                    failed_projects.append({
-                        'name': current_project_name,
-                        'filename': file_info['filename'],
-                        'error': error_msg
-                    })
-                    print(f"❌ Failed: {current_project_name} - {error_msg}")
-                
-                # Clear GPU memory between files to prevent accumulation
-                clear_gpu_memory()
-                
-            except Exception as e:
-                error_msg = str(e)
-                failed_projects.append({
-                    'name': f"{project_name}-{i}",
-                    'filename': file_info['filename'],
-                    'error': error_msg
-                })
-                print(f"❌ Exception in file {i}: {error_msg}")
-                continue
-    
-    except Exception as e:
-        return None, f"❌ Batch processing failed: {str(e)}"
-    
-    # Generate final status message
-    status_parts = []
-    
-    if successful_projects:
-        status_parts.append(f"✅ Successfully created {len(successful_projects)} audiobooks:")
-        for proj in successful_projects:
-            status_parts.append(f"  • {proj['name']} ({proj['filename']}, {proj['words']} words)")
-    
-    if failed_projects:
-        status_parts.append(f"\n❌ Failed to create {len(failed_projects)} audiobooks:")
-        for proj in failed_projects:
-            status_parts.append(f"  • {proj['name']} ({proj['filename']}) - {proj['error']}")
-    
-    if not successful_projects and not failed_projects:
-        status_parts.append("❌ No files were processed")
-    
-    status_parts.append(f"\n📁 All completed audiobooks are saved in the audiobook_projects directory")
-    status_parts.append(f"🎧 Preview shows the last successfully generated audiobook")
-    
-    final_status = "\n".join(status_parts)
-    
-    return last_audio, final_status
-
-# =============================================================================
-# END BATCH PROCESSING FUNCTIONS
 # =============================================================================
 
 with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
@@ -4098,54 +3821,23 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                 )
                             
                             with gr.Column(scale=1):
-                                # Upload Mode Selection
-                                upload_mode = gr.Radio(
-                                    choices=[("Single File", "single"), ("Batch Processing", "batch")],
-                                    value="single",
-                                    label="📋 Upload Mode"
+                                # File upload
+                                text_file = gr.File(
+                                    label="📄 Upload Text File",
+                                    file_types=[".txt", ".md", ".rtf"],
+                                    type="filepath"
                                 )
                                 
-                                # Single file upload (default visible)
-                                with gr.Group(visible=True) as single_upload_group:
-                                    text_file = gr.File(
-                                        label="📄 Upload Text File",
-                                        file_types=[".txt", ".md", ".rtf"],
-                                        type="filepath"
-                                    )
-                                    
-                                    load_file_btn = gr.Button(
-                                        "📂 Load File", 
-                                        size="sm",
-                                        variant="secondary"
-                                    )
-                                    
-                                    # File status
-                                    file_status = gr.HTML(
-                                        "<div class='file-status'>📄 No file loaded</div>"
-                                    )
+                                load_file_btn = gr.Button(
+                                    "📂 Load File", 
+                                    size="sm",
+                                    variant="secondary"
+                                )
                                 
-                                # Batch file upload (hidden by default)
-                                with gr.Group(visible=False) as batch_upload_group:
-                                    batch_files = gr.File(
-                                        label="📚 Upload Multiple Text Files",
-                                        file_types=[".txt", ".md", ".rtf"],
-                                        file_count="multiple",
-                                        type="filepath"
-                                    )
-                                    
-                                    load_batch_btn = gr.Button(
-                                        "📂 Load Batch Files", 
-                                        size="sm",
-                                        variant="secondary"
-                                    )
-                                    
-                                    # Batch file status
-                                    batch_status = gr.HTML(
-                                        "<div class='file-status'>📚 No batch files loaded</div>"
-                                    )
-                                
-                                # State for batch processing
-                                batch_file_list = gr.State([])
+                                # File status
+                                file_status = gr.HTML(
+                                    "<div class='file-status'>📄 No file loaded</div>"
+                                )
                     # NEW: Project Management Section
                     with gr.Group():
                         gr.HTML("<h3>📁 Project Management</h3>")
@@ -4268,37 +3960,19 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             with gr.Group():
                 gr.HTML("<h3>🚀 Audiobook Processing</h3>")
                 
-                # Single processing buttons (default visible)
-                with gr.Group(visible=True) as single_processing_group:
-                    with gr.Row():
-                        validate_btn = gr.Button(
-                            "🔍 Validate Input", 
-                            variant="secondary",
-                            size="lg"
-                        )
-                        
-                        process_btn = gr.Button(
-                            "🎵 Create Audiobook", 
-                            variant="primary",
-                            size="lg",
-                            interactive=False
-                        )
-
-                # Batch processing buttons (hidden by default)
-                with gr.Group(visible=False) as batch_processing_group:
-                    with gr.Row():
-                        validate_batch_btn = gr.Button(
-                            "🔍 Validate Batch", 
-                            variant="secondary",
-                            size="lg"
-                        )
-                        
-                        process_batch_btn = gr.Button(
-                            "🎵 Create Batch Audiobooks", 
-                            variant="primary",
-                            size="lg",
-                            interactive=False
-                        )
+                with gr.Row():
+                    validate_btn = gr.Button(
+                        "🔍 Validate Input", 
+                        variant="secondary",
+                        size="lg"
+                    )
+                    
+                    process_btn = gr.Button(
+                        "🎵 Create Audiobook", 
+                        variant="primary",
+                        size="lg",
+                        interactive=False
+                    )
                 
                 # Status and progress
                 audiobook_status = gr.HTML(
@@ -4316,16 +3990,14 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             <div class="instruction-box">
                 <h4>📋 How to Create Single-Voice Audiobooks:</h4>
                 <ol>
-                    <li><strong>Choose Mode:</strong> Single File or Batch Processing</li>
-                    <li><strong>Add Text:</strong> Paste text or upload file(s)</li>
+                    <li><strong>Add Text:</strong> Paste text or upload a .txt file</li>
                     <li><strong>Select Voice:</strong> Choose from your saved voice profiles</li>
                     <li><strong>Set Project Name:</strong> This will be used for output file naming</li>
                     <li><strong>Validate:</strong> Check that everything is ready</li>
-                    <li><strong>Create:</strong> Generate your audiobook(s) with smart chunking!</li>
+                    <li><strong>Create:</strong> Generate your audiobook with smart chunking!</li>
                 </ol>
                 <p><strong>🎯 Smart Chunking:</strong> Text is automatically split at sentence boundaries after ~50 words for optimal processing.</p>
                 <p><strong>📁 File Output:</strong> Individual chunks saved as project_001.wav, project_002.wav, etc.</p>
-                <p><strong>🚀 Batch Processing:</strong> Upload multiple files and create sequential audiobooks (my_book-1, my_book-2, etc.) - perfect for overnight processing!</p>
             </div>
             """)
 
@@ -5211,59 +4883,6 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         fn=load_text_file,
         inputs=text_file,
         outputs=[audiobook_text, file_status]
-    )
-    
-    # Batch processing event handlers
-    def toggle_upload_mode(mode):
-        if mode == "single":
-            return (
-                gr.Group(visible=True),   # single_upload_group
-                gr.Group(visible=False),  # batch_upload_group
-                gr.Group(visible=True),   # single_processing_group
-                gr.Group(visible=False)   # batch_processing_group
-            )
-        else:
-            return (
-                gr.Group(visible=False),  # single_upload_group
-                gr.Group(visible=True),   # batch_upload_group
-                gr.Group(visible=False),  # single_processing_group
-                gr.Group(visible=True)    # batch_processing_group
-            )
-
-    upload_mode.change(
-        fn=toggle_upload_mode,
-        inputs=[upload_mode],
-        outputs=[single_upload_group, batch_upload_group, single_processing_group, batch_processing_group]
-    )
-
-    load_batch_btn.click(
-        fn=load_text_files_batch,
-        inputs=[batch_files],
-        outputs=[batch_file_list, batch_status]
-    )
-
-    validate_batch_btn.click(
-        fn=validate_batch_audiobook_input,
-        inputs=[batch_file_list, audiobook_voice_selector, project_name],
-        outputs=[process_batch_btn, audiobook_status, gr.State()]
-    )
-
-    process_batch_btn.click(
-        fn=create_batch_audiobook,
-        inputs=[
-            model_state, 
-            batch_file_list, 
-            voice_library_path_state, 
-            audiobook_voice_selector, 
-            project_name, 
-            enable_volume_norm, 
-            target_volume_level
-        ],
-        outputs=[audiobook_output, audiobook_status]
-    ).then(
-        fn=force_refresh_all_project_dropdowns,
-        inputs=[],
-        outputs=[previous_project_dropdown, multi_previous_project_dropdown, project_dropdown]
     )
     
     # Voice selection for audiobook
@@ -6304,6 +5923,194 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     )
     
     # Enhanced Validation with project name
+
+def load_text_files_batch(file_paths: list) -> tuple:
+    """
+    Load multiple text files for batch processing.
+    
+    Args:
+        file_paths: List of file paths to load
+        
+    Returns:
+        tuple: (list_of_contents, status_message)
+    """
+    if not file_paths:
+        return [], "No files uploaded"
+    
+    loaded_files = []
+    total_words = 0
+    
+    for i, file_path in enumerate(file_paths):
+        try:
+            content, status = load_text_file(file_path)
+            if content:
+                loaded_files.append({
+                    'content': content,
+                    'filename': os.path.basename(file_path),
+                    'words': len(content.split())
+                })
+                total_words += len(content.split())
+            else:
+                return [], f"❌ Error loading file {i+1}: {status}"
+        except Exception as e:
+            return [], f"❌ Error loading file {i+1}: {str(e)}"
+    
+    status_msg = f"✅ Loaded {len(loaded_files)} files ({total_words} total words)"
+    return loaded_files, status_msg
+
+def validate_batch_audiobook_input(file_list: list, selected_voice: str, project_name: str) -> tuple:
+    """
+    Validate inputs for batch audiobook creation.
+    
+    Args:
+        file_list: List of loaded file contents
+        selected_voice: Selected voice profile name
+        project_name: Base project name
+        
+    Returns:
+        tuple: (process_button_state, status_message, dummy_output)
+    """
+    if not file_list:
+        return gr.Button(interactive=False), "❌ No files loaded for batch processing", None
+    
+    if not selected_voice:
+        return gr.Button(interactive=False), "❌ Please select a voice profile", None
+    
+    if not project_name or not project_name.strip():
+        return gr.Button(interactive=False), "❌ Please enter a project name", None
+    
+    # Check if project name is valid
+    safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
+    if not safe_project_name:
+        return gr.Button(interactive=False), "❌ Project name contains invalid characters", None
+    
+    total_files = len(file_list)
+    total_words = sum(f['words'] for f in file_list)
+    
+    status_msg = f"✅ Ready to process {total_files} files ({total_words} total words) with voice '{selected_voice}' as project '{project_name}'"
+    
+    return gr.Button(interactive=True), status_msg, None
+
+def create_batch_audiobook(
+    model,
+    file_list: list,
+    voice_library_path: str,
+    selected_voice: str,
+    project_name: str,
+    enable_norm: bool = True,
+    target_level: float = -18.0
+) -> tuple:
+    """
+    Create multiple audiobooks from a batch of files.
+    
+    Args:
+        model: TTS model instance
+        file_list: List of loaded file contents with metadata
+        voice_library_path: Path to voice library
+        selected_voice: Selected voice profile name
+        project_name: Base project name (will be suffixed with -1, -2, etc.)
+        enable_norm: Whether to enable volume normalization
+        target_level: Target volume level in dB
+        
+    Returns:
+        tuple: (last_audio_output, final_status_message)
+    """
+    if not file_list:
+        return None, "❌ No files to process"
+    
+    if not selected_voice:
+        return None, "❌ No voice selected"
+    
+    if not project_name or not project_name.strip():
+        return None, "❌ No project name provided"
+    
+    # Validate voice exists
+    voice_config = get_voice_config(voice_library_path, selected_voice)
+    if not voice_config:
+        return None, f"❌ Could not load voice configuration for '{selected_voice}'"
+    
+    total_files = len(file_list)
+    successful_projects = []
+    failed_projects = []
+    last_audio = None
+    
+    try:
+        # Process each file in the batch
+        for i, file_info in enumerate(file_list, 1):
+            try:
+                # Create project name with suffix
+                current_project_name = f"{project_name}-{i}"
+                
+                print(f"🎵 Processing file {i}/{total_files}: {file_info['filename']} -> {current_project_name}")
+                
+                # Create audiobook for this file
+                result = create_audiobook_with_volume_settings(
+                    model=model,
+                    text_content=file_info['content'],
+                    voice_library_path=voice_library_path,
+                    selected_voice=selected_voice,
+                    project_name=current_project_name,
+                    enable_norm=enable_norm,
+                    target_level=target_level
+                )
+                
+                if result and len(result) >= 2 and result[0] is not None:
+                    # Success
+                    last_audio = result[0]  # Keep the last successful audio for preview
+                    successful_projects.append({
+                        'name': current_project_name,
+                        'filename': file_info['filename'],
+                        'words': file_info['words']
+                    })
+                    print(f"✅ Completed: {current_project_name}")
+                else:
+                    # Failed
+                    error_msg = result[1] if result and len(result) > 1 else "Unknown error"
+                    failed_projects.append({
+                        'name': current_project_name,
+                        'filename': file_info['filename'],
+                        'error': error_msg
+                    })
+                    print(f"❌ Failed: {current_project_name} - {error_msg}")
+                
+                # Clear GPU memory between files to prevent accumulation
+                clear_gpu_memory()
+                
+            except Exception as e:
+                error_msg = str(e)
+                failed_projects.append({
+                    'name': f"{project_name}-{i}",
+                    'filename': file_info['filename'],
+                    'error': error_msg
+                })
+                print(f"❌ Exception in file {i}: {error_msg}")
+                continue
+    
+    except Exception as e:
+        return None, f"❌ Batch processing failed: {str(e)}"
+    
+    # Generate final status message
+    status_parts = []
+    
+    if successful_projects:
+        status_parts.append(f"✅ Successfully created {len(successful_projects)} audiobooks:")
+        for proj in successful_projects:
+            status_parts.append(f"  • {proj['name']} ({proj['filename']}, {proj['words']} words)")
+    
+    if failed_projects:
+        status_parts.append(f"\n❌ Failed to create {len(failed_projects)} audiobooks:")
+        for proj in failed_projects:
+            status_parts.append(f"  • {proj['name']} ({proj['filename']}) - {proj['error']}")
+    
+    if not successful_projects and not failed_projects:
+        status_parts.append("❌ No files were processed")
+    
+    status_parts.append(f"\n📁 All completed audiobooks are saved in the audiobook_projects directory")
+    status_parts.append(f"🎧 Preview shows the last successfully generated audiobook")
+    
+    final_status = "\n".join(status_parts)
+    
+    return last_audio, final_status
 
 if __name__ == "__main__":
     demo.queue(
