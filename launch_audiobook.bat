@@ -1,8 +1,12 @@
 @echo off
-set CUDA_LAUNCH_BLOCKING=1
-echo INFO: CUDA_LAUNCH_BLOCKING=1 set for detailed CUDA error reporting.
-set TORCH_USE_CUDA_DSA=1
-echo INFO: TORCH_USE_CUDA_DSA=1 attempted for more detailed device-side assertions.
+setlocal
+
+rem Performance and Debugging Section
+rem =================================
+rem Enable CUDA_LAUNCH_BLOCKING for detailed error reports, but it hurts performance.
+rem set "CUDA_LAUNCH_BLOCKING=1"
+rem set "TORCH_USE_CUDA_DSA=1"
+
 echo Checking for virtual environment...
 if not exist "venv\Scripts\activate.bat" (
     echo ERROR: Virtual environment not found!

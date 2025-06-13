@@ -1,4 +1,4 @@
-@echo off
+d@echo off
 echo ========================================
 echo   Chatterbox TTS - Installation Setup
 echo ========================================
