@@ -174,8 +174,16 @@ class ChatterboxTTS:
                 print("MPS not available because the current MacOS version is not 12.3+ and/or you do not have an MPS-enabled device on this machine.")
             device = "cpu"
 
-        for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
-            local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath)
+        # Try to use cached files first to avoid unnecessary downloads
+        try:
+            for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
+                local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath, local_files_only=True)
+            print("✅ Using cached ChatterboxTTS model files")
+        except Exception as e:
+            print(f"⚠️ Cached files not found, downloading from HuggingFace: {e}")
+            # Fallback to downloading if cache is not available
+            for fpath in ["ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors", "tokenizer.json", "conds.pt"]:
+                local_path = hf_hub_download(repo_id=REPO_ID, filename=fpath)
 
         return cls.from_local(Path(local_path).parent, device)
 
