@@ -7,6 +7,8 @@ pyrightconfig.json
 __pycache__/
 *.py[cod]
 *$py.class
+src/**/__pycache__/
+src/**/*.pyc
 
 # C extensions
 *.so
@@ -120,6 +122,10 @@ audiobook_projects/
 speakers/
 source/
 audiobook_config.json
+
+# Development and archive directories
+archive/
+development/
 
 # OS generated files
 .DS_Store
