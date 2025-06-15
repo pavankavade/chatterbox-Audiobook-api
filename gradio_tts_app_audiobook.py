@@ -402,22 +402,35 @@ def validate_audiobook_input(text_content, selected_voice, project_name):
     )
 
 def get_voice_config(voice_library_path, voice_name):
-    """Get voice configuration for audiobook generation"""
+    """Get voice configuration for audiobook generation with enhanced fallback logic"""
     if not voice_name:
         return None
     
+    # Clean up voice name - remove multiple _temp_volume suffixes (handles nested cases)
+    original_voice_name = voice_name
+    cleaned_voice_name = voice_name
+    
+    # Remove all _temp_volume suffixes iteratively
+    while '_temp_volume' in cleaned_voice_name:
+        cleaned_voice_name = cleaned_voice_name.replace('_temp_volume', '')
+    
     # Sanitize voice name - remove special characters that might cause issues
-    safe_voice_name = voice_name.replace("_-_", "_").replace("__", "_")
+    safe_voice_name = cleaned_voice_name.replace("_-_", "_").replace("__", "_")
     safe_voice_name = "".join(c for c in safe_voice_name if c.isalnum() or c in ('_', '-')).strip('_-')
     
-    # Try original name first, then sanitized name, then without _temp_volume suffix
-    names_to_try = [voice_name, safe_voice_name]
+    # Try voice names in order of preference
+    names_to_try = [
+        voice_name,           # Original name first
+        cleaned_voice_name,   # Cleaned name (without _temp_volume)
+        safe_voice_name,      # Sanitized name
+    ]
     
-    # If voice name ends with _temp_volume, also try the original name without the suffix
-    if voice_name.endswith('_temp_volume'):
-        original_name = voice_name.replace('_temp_volume', '')
-        names_to_try.append(original_name)
-        print(f"⚠️ Voice '{voice_name}' not found, will also try original voice '{original_name}'")
+    # Remove duplicates while preserving order
+    names_to_try = list(dict.fromkeys([name for name in names_to_try if name]))
+    
+    # Log fallback attempt if needed
+    if original_voice_name != cleaned_voice_name:
+        print(f"⚠️ Voice '{original_voice_name}' not found, will also try original voice '{cleaned_voice_name}'")
     
     for name_to_try in names_to_try:
         profile_dir = os.path.join(voice_library_path, name_to_try)
@@ -434,9 +447,9 @@ def get_voice_config(voice_library_path, voice_name):
                     if os.path.exists(audio_path):
                         audio_file = audio_path
                 
-                # If we found the voice using fallback (without _temp_volume), log success
-                if voice_name.endswith('_temp_volume') and name_to_try != voice_name:
-                    print(f"✅ Successfully found original voice '{name_to_try}' for '{voice_name}'")
+                # If we found the voice using fallback, log success
+                if name_to_try != original_voice_name:
+                    print(f"✅ Successfully found original voice '{name_to_try}' for '{original_voice_name}'")
                 
                 return {
                     'audio_file': audio_file,
@@ -447,12 +460,15 @@ def get_voice_config(voice_library_path, voice_name):
                     'min_p': config.get('min_p', 0.05),
                     'top_p': config.get('top_p', 1.0),
                     'repetition_penalty': config.get('repetition_penalty', 1.2),
-                    'display_name': config.get('display_name', name_to_try)
+                    'display_name': config.get('display_name', name_to_try),
+                    'normalization_enabled': config.get('normalization_enabled', False),
+                    'target_level_db': config.get('target_level_db', -18.0)
                 }
             except Exception as e:
                 print(f"⚠️ Error reading config for voice '{name_to_try}': {str(e)}")
                 continue
     
+    print(f"❌ Voice '{original_voice_name}' not found in any fallback attempts")
     return None
 
 def clear_gpu_memory():
@@ -479,14 +495,64 @@ def adaptive_chunk_text(text, max_words=50, reduce_on_error=True):
     
     return chunk_text_by_sentences(text, max_words)
 
+def validate_text_for_generation(text, voice_name=""):
+    """
+    Validate text before TTS generation to prevent static/noise generation
+    Returns: (is_valid, cleaned_text, reason)
+    """
+    if not text or not text.strip():
+        return False, "", "Empty text"
+    
+    cleaned_text = text.strip()
+    
+    # Check minimum length (at least 3 characters of actual content)
+    if len(cleaned_text) < 3:
+        return False, "", f"Text too short: '{cleaned_text}'"
+    
+    # Check if text is just punctuation or whitespace
+    content_chars = re.sub(r'[\s\.\,\!\?\:\;\-\(\)\[\]\"\']+', '', cleaned_text)
+    if len(content_chars) < 2:
+        return False, "", f"No meaningful content: '{cleaned_text}'"
+    
+    # Check for common problematic patterns that generate static
+    problematic_patterns = [
+        r'^\s*[\.]{3,}\s*$',           # Just dots "..."
+        r'^\s*[\-]{3,}\s*$',           # Just dashes "---"
+        r'^\s*[_]{3,}\s*$',            # Just underscores "___"
+        r'^\s*\*+\s*$',                # Just asterisks "***"
+        r'^\s*#+\s*$',                 # Just hashes "###"
+        r'^\s*[0-9\s\.\-]+\s*$',       # Just numbers and punctuation
+    ]
+    
+    for pattern in problematic_patterns:
+        if re.match(pattern, cleaned_text):
+            return False, "", f"Problematic pattern detected: '{cleaned_text}'"
+    
+    return True, cleaned_text, "Valid"
+
 def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3, min_p=0.05, top_p=1.0, repetition_penalty=1.2):
-    """Generate audio with retry logic for CUDA errors"""
+    """Generate audio with retry logic for CUDA errors and text validation"""
     # Check if model is None and load it if needed
     if model is None:
         print("⚠️ Model is None, loading model...")
         model = load_model()
         if model is None:
             raise RuntimeError("❌ Failed to load TTS model")
+    
+    # Validate text before generation
+    is_valid, cleaned_text, reason = validate_text_for_generation(text)
+    if not is_valid:
+        print(f"⚠️ Skipping TTS generation - {reason}")
+        # Return a very short silence instead of generating static
+        import numpy as np
+        silence_duration = 0.1  # 100ms of silence
+        sample_rate = getattr(model, 'sr', 24000)
+        silence_samples = int(silence_duration * sample_rate)
+        silence_audio = np.zeros(silence_samples, dtype=np.float32)
+        return torch.tensor(silence_audio).unsqueeze(0)
+    
+    # Use cleaned text for generation
+    text = cleaned_text
     
     for retry in range(max_retries):
         try:
@@ -954,11 +1020,37 @@ def clean_character_name_from_text(text, voice_name):
     """
     Remove character name from the beginning of text if it matches the voice name
     Handles various formats like 'P1', 'P1:', 'P1 -', etc.
+    Enhanced to handle common patterns like 'PERSON 1', 'PERSON 2', etc.
     """
+    import re
+    
     text = text.strip()
     
+    # If text is empty, return empty
+    if not text:
+        return ""
+    
+    # Enhanced patterns for common voice-only lines that should be filtered out
+    voice_only_patterns = [
+        r'^PERSON\s+\d+\s*[:\-\.]?\s*$',           # "PERSON 1", "PERSON 2:", etc.
+        r'^CHARACTER\s+\d+\s*[:\-\.]?\s*$',        # "CHARACTER 1", etc.
+        r'^SPEAKER\s+\d+\s*[:\-\.]?\s*$',          # "SPEAKER 1", etc.
+        r'^VOICE\s+\d+\s*[:\-\.]?\s*$',            # "VOICE 1", etc.
+        r'^[A-Z]+\s+\d+\s*[:\-\.]?\s*$',           # Any caps word + number
+        r'^\[[^\]]+\]\s*$',                        # Just voice tags like "[voice_name]"
+    ]
+    
+    # Check if this is a voice-only line that should be completely filtered out
+    for pattern in voice_only_patterns:
+        if re.match(pattern, text, re.IGNORECASE):
+            print(f"[DEBUG] Text is just a voice label '{text}', returning empty")
+            return ""
+    
     # If the entire text is just the voice name (with possible punctuation), return empty
-    if text.lower().replace(':', '').replace('.', '').replace('-', '').strip() == voice_name.lower():
+    cleaned_text_for_comparison = re.sub(r'[:\-\.\s\|]+', '', text.lower())
+    cleaned_voice_for_comparison = re.sub(r'[:\-\.\s\|_]+', '', voice_name.lower())
+    
+    if cleaned_text_for_comparison == cleaned_voice_for_comparison:
         print(f"[DEBUG] Text is just the voice name '{voice_name}', returning empty")
         return ""
     
@@ -1498,21 +1590,36 @@ def create_multi_voice_audiobook_with_assignments(
             continue
         voice_name, chunk_text = chunks[i]
         try:
-            voice_config = get_voice_config(voice_library_path, voice_name)
-            if not voice_config:
-                return None, None, f"❌ Could not load voice config for '{voice_name}'", None
-            if not voice_config['audio_file']:
-                return None, None, f"❌ No audio file for voice '{voice_config['display_name']}'", None
-            if not os.path.exists(voice_config['audio_file']):
-                return None, None, f"❌ Audio file not found: {voice_config['audio_file']}", None
-            # Prepare conditionals from audio prompt
-            conds = processing_model.prepare_conditionals(voice_config['audio_file'], voice_config['exaggeration'])
-            
-            wav = processing_model.generate(
-                chunk_text, conds,
-                exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
-                cfg_weight=voice_config['cfg_weight'])
-            audio_np = wav.squeeze(0).cpu().numpy()
+            # Validate text before processing
+            is_valid, cleaned_text, reason = validate_text_for_generation(chunk_text, voice_name)
+            if not is_valid:
+                print(f"⚠️ Skipping chunk {i+1} for voice '{voice_name}' - {reason}")
+                # Create a short silence instead of processing invalid text
+                import numpy as np
+                silence_duration = 0.2  # 200ms of silence
+                sample_rate = getattr(processing_model, 'sr', 24000)
+                silence_samples = int(silence_duration * sample_rate)
+                audio_np = np.zeros(silence_samples, dtype=np.float32)
+            else:
+                voice_config = get_voice_config(voice_library_path, voice_name)
+                if not voice_config:
+                    return None, None, f"❌ Could not load voice config for '{voice_name}'", None
+                if not voice_config['audio_file']:
+                    return None, None, f"❌ No audio file for voice '{voice_config['display_name']}'", None
+                if not os.path.exists(voice_config['audio_file']):
+                    return None, None, f"❌ Audio file not found: {voice_config['audio_file']}", None
+                
+                # Use cleaned text for generation
+                chunk_text = cleaned_text
+                
+                # Prepare conditionals from audio prompt
+                conds = processing_model.prepare_conditionals(voice_config['audio_file'], voice_config['exaggeration'])
+                
+                wav = processing_model.generate(
+                    chunk_text, conds,
+                    exaggeration=voice_config['exaggeration'], temperature=voice_config['temperature'],
+                    cfg_weight=voice_config['cfg_weight'])
+                audio_np = wav.squeeze(0).cpu().numpy()
             
             # Apply volume normalization if enabled in voice profile
             if voice_config.get('normalization_enabled', False):
