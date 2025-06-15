@@ -147,7 +147,7 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
         top_p=top_p,
         repetition_penalty=repetition_penalty,
     )
-    return (model.sr, wav.squeeze(0).numpy())
+    return (getattr(model, "sr", 24000) if model else 24000, wav.squeeze(0).numpy())
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, min_p=0.05, top_p=1.0, repetition_penalty=1.2):
     """Generate audio with automatic CPU fallback for problematic CUDA errors"""
@@ -532,6 +532,9 @@ def validate_text_for_generation(text, voice_name=""):
 
 def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, max_retries=3, min_p=0.05, top_p=1.0, repetition_penalty=1.2):
     """Generate audio with retry logic for CUDA errors and text validation"""
+    import signal
+    import numpy as np
+    
     # Check if model is None and load it if needed
     if model is None:
         print("⚠️ Model is None, loading model...")
@@ -544,9 +547,8 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
     if not is_valid:
         print(f"⚠️ Skipping TTS generation - {reason}")
         # Return a very short silence instead of generating static
-        import numpy as np
         silence_duration = 0.1  # 100ms of silence
-        sample_rate = getattr(model, 'sr', 24000)
+        sample_rate = getattr(model, 'sr', 24000) if model else 24000
         silence_samples = int(silence_duration * sample_rate)
         silence_audio = np.zeros(silence_samples, dtype=np.float32)
         return torch.tensor(silence_audio).unsqueeze(0)
@@ -554,26 +556,58 @@ def generate_with_retry(model, text, audio_prompt_path, exaggeration, temperatur
     # Use cleaned text for generation
     text = cleaned_text
     
+    # Timeout handler for hanging generation
+    def timeout_handler(signum, frame):
+        raise TimeoutError("TTS generation timed out")
+    
+    # Set timeout for generation (30 seconds per chunk)
+    timeout_seconds = 30
+    
     for retry in range(max_retries):
         try:
             # Clear memory before generation
             if retry > 0:
                 clear_gpu_memory()
             
-            # Prepare conditionals from audio prompt
-            conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
+            # Set timeout signal (only on Unix-like systems)
+            if hasattr(signal, 'SIGALRM'):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(timeout_seconds)
             
-            wav = model.generate(
-                text,
-                conds,
-                exaggeration=exaggeration,
-                temperature=temperature,
-                cfg_weight=cfg_weight,
-                min_p=min_p,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-            )
-            return wav
+            try:
+                # Prepare conditionals from audio prompt
+                conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
+                
+                wav = model.generate(
+                    text,
+                    conds,
+                    exaggeration=exaggeration,
+                    temperature=temperature,
+                    cfg_weight=cfg_weight,
+                    min_p=min_p,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                )
+                
+                # Cancel timeout if successful
+                if hasattr(signal, 'SIGALRM'):
+                    signal.alarm(0)
+                
+                return wav
+            
+            except TimeoutError:
+                print(f"⚠️ Generation timed out after {timeout_seconds}s, retry {retry + 1}/{max_retries}")
+                if hasattr(signal, 'SIGALRM'):
+                    signal.alarm(0)
+                if retry < max_retries - 1:
+                    continue
+                else:
+                    # Return silence if all retries timeout
+                    silence_duration = 0.5
+                    sample_rate = getattr(model, 'sr', 24000) if model else 24000
+                    silence_samples = int(silence_duration * sample_rate)
+                    silence_audio = np.zeros(silence_samples, dtype=np.float32)
+                    return torch.tensor(silence_audio).unsqueeze(0)
             
         except RuntimeError as e:
             if ("srcIndex < srcSelectDimSize" in str(e) or 
@@ -704,7 +738,7 @@ def create_audiobook(
                 target_level = voice_config.get('target_level_db', -18.0)
                 try:
                     # Analyze current audio level
-                    level_info = analyze_audio_level(audio_np, model.sr)
+                    level_info = analyze_audio_level(audio_np, getattr(model, "sr", 24000) if model else 24000)
                     current_level = level_info['rms_db']
                     
                     # Normalize audio
@@ -719,7 +753,7 @@ def create_audiobook(
             with wave.open(fname, 'wb') as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
-                wav_file.setframerate(model.sr)
+                wav_file.setframerate(getattr(model, "sr", 24000) if model else 24000)
                 audio_int16 = (audio_np * 32767).astype(np.int16)
                 wav_file.writeframes(audio_int16.tobytes())
             del wav
@@ -748,9 +782,9 @@ def create_audiobook(
     # Combine all audio for preview (just concatenate)
     combined_audio = np.concatenate(audio_chunks)
     total_words = len(text_content.split())
-    duration_minutes = len(combined_audio) // model.sr // 60
+    duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
     success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
-    return (model.sr, combined_audio), success_msg
+    return (getattr(model, "sr", 24000) if model else 24000, combined_audio), success_msg
 
 def load_voice_for_tts(voice_library_path, voice_name):
     """Load a voice profile for TTS tab - returns settings for sliders"""
@@ -1255,14 +1289,14 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
         combined_audio = np.concatenate(audio_chunks)
         
         total_words = sum([info['word_count'] for info in chunk_info])
-        duration_minutes = len(combined_audio) // model.sr // 60
+        duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
         
         # Create assignment summary
         assignment_summary = "\n".join([f"🎭 [{char}] → {voice_counts[char]}" for char in voice_counts.keys()])
         
         success_msg = f"✅ Multi-voice audiobook created successfully!\n📊 {total_words:,} words in {total_chunks} chunks\n🎭 Characters: {len(voice_counts)}\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(saved_files)} audio chunks\n\nVoice Assignments:\n{assignment_summary}"
         
-        return (model.sr, combined_audio), success_msg
+        return (getattr(model, "sr", 24000) if model else 24000, combined_audio), success_msg
         
     except Exception as e:
         error_msg = f"❌ Error creating multi-voice audiobook: {str(e)}"
@@ -1597,9 +1631,10 @@ def create_multi_voice_audiobook_with_assignments(
                 # Create a short silence instead of processing invalid text
                 import numpy as np
                 silence_duration = 0.2  # 200ms of silence
-                sample_rate = getattr(processing_model, 'sr', 24000)
+                sample_rate = getattr(processing_model, 'sr', 24000) if processing_model else 24000
                 silence_samples = int(silence_duration * sample_rate)
                 audio_np = np.zeros(silence_samples, dtype=np.float32)
+                print(f"🔇 Generated {silence_duration}s silence for chunk {i+1} instead of invalid text")
             else:
                 voice_config = get_voice_config(voice_library_path, voice_name)
                 if not voice_config:
@@ -1626,7 +1661,7 @@ def create_multi_voice_audiobook_with_assignments(
                 target_level = voice_config.get('target_level_db', -18.0)
                 try:
                     # Analyze current audio level
-                    level_info = analyze_audio_level(audio_np, model.sr)
+                    level_info = analyze_audio_level(audio_np, getattr(model, "sr", 24000) if model else 24000)
                     current_level = level_info['rms_db']
                     
                     # Normalize audio
@@ -2337,7 +2372,7 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             audio_output = wav.squeeze(0).cpu().numpy()
             status_msg = f"✅ Sample regenerated successfully!\n🎭 Voice: {voice_config.get('display_name', 'Unknown')}\n📝 Text: {text_to_regenerate[:100]}..."
             
-            return (model.sr, audio_output), status_msg
+            return (getattr(model, "sr", 24000) if model else 24000, audio_output), status_msg
             
         else:
             # Multi-voice regeneration - use first voice
@@ -2361,7 +2396,7 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             audio_output = wav.squeeze(0).cpu().numpy()
             status_msg = f"✅ Sample regenerated successfully!\n🎭 Voice: {voice_config.get('display_name', first_voice)}\n📝 Text: {text_to_regenerate[:100]}..."
             
-            return (model.sr, audio_output), status_msg
+            return (getattr(model, "sr", 24000) if model else 24000, audio_output), status_msg
             
     except Exception as e:
         clear_gpu_memory()
@@ -2582,7 +2617,7 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
             target_level = voice_config.get('target_level_db', -18.0)
             try:
                 # Analyze current audio level
-                level_info = analyze_audio_level(audio_output, model.sr)
+                level_info = analyze_audio_level(audio_output, getattr(model, "sr", 24000) if model else 24000)
                 current_level = level_info['rms_db']
                 
                 # Normalize audio
@@ -2600,7 +2635,7 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
         with wave.open(temp_file_path, 'wb') as wav_file:
             wav_file.setnchannels(1)  # Mono
             wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(model.sr)
+            wav_file.setframerate(getattr(model, "sr", 24000) if model else 24000)
             # Convert float32 to int16
             audio_int16 = (audio_output * 32767).astype(np.int16)
             wav_file.writeframes(audio_int16.tobytes())
@@ -3880,9 +3915,9 @@ def create_audiobook_with_original_voice_metadata(
     # Combine all audio for preview
     combined_audio = np.concatenate(audio_chunks)
     total_words = len(text_content.split())
-    duration_minutes = len(combined_audio) // model.sr // 60
+    duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
     success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {original_voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
-    return (model.sr, combined_audio), success_msg
+    return (getattr(model, "sr", 24000) if model else 24000, combined_audio), success_msg
 
 def create_audiobook_with_volume_settings(model, text_content, voice_library_path, selected_voice, project_name, 
                                          enable_norm=True, target_level=-18.0):
