@@ -270,15 +270,8 @@ def save_audio_chunks(audio_chunks, sample_rate, project_name, output_dir="audio
         filename = f"{safe_project_name}_{i:03d}.wav"
         filepath = os.path.join(project_dir, filename)
         
-        # Save as WAV file
-        with wave.open(filepath, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(sample_rate)
-            
-            # Convert float32 to int16
-            audio_int16 = (audio_chunk * 32767).astype(np.int16)
-            wav_file.writeframes(audio_int16.tobytes())
+        # Save audio to file using soundfile to ensure consistency
+        sf.write(filepath, audio_chunk, sample_rate)
         
         saved_files.append(filepath)
     
@@ -759,7 +752,10 @@ def create_audiobook(
             del wav
             clear_gpu_memory()
         except Exception as chunk_error:
-            return None, f"❌ Error processing chunk {i+1}: {str(chunk_error)}"
+            import traceback
+            traceback.print_exc()
+            error_message = f"❌ Error generating chunk {i+1}: {chunk_error}"
+            return None, error_message, None, None
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == total_chunks:
             # Save project metadata
@@ -2020,8 +2016,19 @@ def get_existing_projects(output_dir: str = "audiobook_projects") -> list:
                 if re.match(pattern1, wav_file) or re.match(pattern2, wav_file):
                     chunk_files.append(wav_file)
             
-            # Try to load metadata
-            metadata = load_project_metadata(project_path)
+            # Try to load metadata - check both project_metadata.json and metadata.json
+            metadata = None
+            metadata_file = os.path.join(project_path, "project_metadata.json")
+            if os.path.exists(metadata_file):
+                try:
+                    with open(metadata_file, 'r', encoding='utf-8') as f:
+                        metadata = json.load(f)
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not load project_metadata.json: {str(e)}")
+            
+            if not metadata:
+                # Fallback to old metadata.json
+                metadata = load_project_metadata(project_path)
             
             project_info = {
                 "name": project_name,
@@ -2423,6 +2430,14 @@ def get_project_chunks(project_name: str) -> list:
     # Get only the actual chunk files (not complete, backup, or temp files)
     all_wav_files = [f for f in os.listdir(project_path) if f.endswith('.wav')]
     
+    # Debug: print all wav files found
+    if all_wav_files:
+        print(f"📁 Found {len(all_wav_files)} WAV files in project '{project_name}':")
+        for f in all_wav_files[:5]:  # Show first 5
+            print(f"  - {f}")
+        if len(all_wav_files) > 5:
+            print(f"  ... and {len(all_wav_files) - 5} more")
+    
     # Filter to only get numbered chunk files in format: projectname_001.wav, projectname_002.wav etc.
     # Also handle multi-voice format: projectname_001_CHARACTER.wav
     chunk_files = []
@@ -2430,7 +2445,8 @@ def get_project_chunks(project_name: str) -> list:
         # Skip complete files, backup files, and temp files
         if (wav_file.endswith('_complete.wav') or 
             '_backup_' in wav_file or 
-            'temp_regenerated_' in wav_file):
+            'temp_regenerated_' in wav_file or
+            'temp_continuous_' in wav_file):
             continue
         
         # Check file size - skip empty/corrupted files
@@ -2446,12 +2462,22 @@ def get_project_chunks(project_name: str) -> list:
         
         # Check if it matches the pattern: projectname_XXX.wav OR projectname_XXX_CHARACTER.wav
         import re
-        # Pattern for single voice: projectname_001.wav
+        
+        # Try case-insensitive matching first
+        # Pattern for single voice: projectname_001.wav (case insensitive)
         pattern_single = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
-        # Pattern for multi-voice: projectname_001_CHARACTER.wav
+        # Pattern for multi-voice: projectname_001_CHARACTER.wav (case insensitive)
         pattern_multi = rf'^{re.escape(project_name)}_(\d{{3}})_.*\.wav$'
         
-        if re.match(pattern_single, wav_file) or re.match(pattern_multi, wav_file):
+        # Also try with any numeric pattern in case project name doesn't match exactly
+        pattern_any_numeric = r'_(\d{3})(?:_.*)?\.wav$'
+        
+        if (re.match(pattern_single, wav_file, re.IGNORECASE) or 
+            re.match(pattern_multi, wav_file, re.IGNORECASE)):
+            chunk_files.append(wav_file)
+        elif re.search(pattern_any_numeric, wav_file):
+            # If the exact project name doesn't match but file has the right format, include it
+            print(f"ℹ️ Including file with numeric pattern: {wav_file}")
             chunk_files.append(wav_file)
     
     # Sort by chunk number (numerically, not lexicographically)
@@ -2470,13 +2496,27 @@ def get_project_chunks(project_name: str) -> list:
         return 0
     chunk_files = sorted(chunk_files, key=extract_chunk_num_from_filename)
     
+    # Debug: show what files we found
+    if chunk_files:
+        print(f"✅ Found {len(chunk_files)} chunk files matching patterns")
+    else:
+        print(f"❌ No chunk files matched the expected patterns")
+        print(f"   Expected patterns: {project_name}_XXX.wav or {project_name}_XXX_CHARACTER.wav")
+    
     chunks = []
     metadata = project.get('metadata')
+    
+    # Debug: check what metadata files exist
+    metadata_file = os.path.join(project_path, "project_metadata.json")
+    project_info_file = os.path.join(project_path, "project_info.json")
+    
+    print(f"📋 Checking for metadata files:")
+    print(f"   - project_metadata.json: {'✅ exists' if os.path.exists(metadata_file) else '❌ not found'}")
+    print(f"   - project_info.json: {'✅ exists' if os.path.exists(project_info_file) else '❌ not found'}")
     
     # If no metadata.json, try to load from project_info.json (newer format)
     project_info_data = None
     if not metadata:
-        project_info_file = os.path.join(project_path, "project_info.json")
         if os.path.exists(project_info_file):
             try:
                 with open(project_info_file, 'r') as f:
@@ -2491,53 +2531,19 @@ def get_project_chunks(project_name: str) -> list:
         project_type = metadata.get('project_type', 'single_voice')
         voice_info = metadata.get('voice_info', {})
         
-        # For multi-voice, also load the project_info.json to get voice assignments
-        voice_assignments = {}
-        if project_type == 'multi_voice':
-            project_info_file = os.path.join(project_path, "project_info.json")
-            if os.path.exists(project_info_file):
-                try:
-                    with open(project_info_file, 'r') as f:
-                        project_info = json.load(f)
-                        voice_assignments = project_info.get('voice_assignments', {})
-                except Exception as e:
-                    print(f"⚠️ Warning: Could not load voice assignments: {str(e)}")
-    
-    elif project_info_data and project_info_data.get('chunks'):
-        # Project with project_info.json format (newer multi-voice projects)
-        original_chunks = [chunk.get('text', 'Text not available') for chunk in project_info_data.get('chunks', [])]
-        project_type = 'multi_voice'  # project_info.json is typically for multi-voice
-        voice_assignments = project_info_data.get('voice_assignments', {})
-        
-        # Build voice_info from voice assignments and voice library
-        voice_info = {}
-        for character, voice_name in voice_assignments.items():
-            # We'll need to load voice config later for each chunk
-            voice_info[voice_name] = {'voice_name': voice_name, 'display_name': voice_name}
-        
-        metadata = {
-            'chunks': original_chunks,
-            'project_type': project_type,
-            'voice_info': voice_info
-        }
-        
+        # For each chunk file, create chunk info with text from metadata
         for i, audio_file in enumerate(chunk_files):
-            # Extract the actual chunk number from the filename instead of using the enumerate index
             actual_chunk_num = extract_chunk_num_from_filename(audio_file)
             
-            # Get text for this chunk
+            # Find the matching chunk in metadata by chunk number
             chunk_text = "Text not available"
-            if project_info_data and project_info_data.get('chunks'):
-                # For project_info.json format, find chunk by number
-                project_chunks = project_info_data.get('chunks', [])
-                matching_chunk = next((c for c in project_chunks if c.get('chunk_num') == actual_chunk_num), None)
-                if matching_chunk:
-                    chunk_text = matching_chunk.get('text', 'Text not available')
-            elif i < len(original_chunks):
-                chunk_text = original_chunks[i]
+            for meta_chunk in original_chunks:
+                if isinstance(meta_chunk, dict) and meta_chunk.get('chunk_num') == actual_chunk_num:
+                    chunk_text = meta_chunk.get('text', 'Text not available')
+                    break
             
             chunk_info = {
-                'chunk_num': actual_chunk_num,  # Use actual chunk number from filename
+                'chunk_num': actual_chunk_num,
                 'audio_file': os.path.join(project_path, audio_file),
                 'audio_filename': audio_file,
                 'text': chunk_text,
@@ -2554,18 +2560,29 @@ def get_project_chunks(project_name: str) -> list:
                     character_name = '_'.join(parts[2:])  # Everything after project_XXX_
                     chunk_info['character'] = character_name
                     
-                    # Look up the actual voice assigned to this character
-                    # Try exact match first, then try with spaces instead of underscores
-                    assigned_voice = voice_assignments.get(character_name)
-                    if not assigned_voice:
-                        character_with_spaces = character_name.replace('_', ' ')
-                        assigned_voice = voice_assignments.get(character_with_spaces, character_name)
-                    chunk_info['assigned_voice'] = assigned_voice
-                    
-                    # Get the voice config for the assigned voice - need to load from voice library
-                    # We'll load this dynamically when needed during regeneration
-                    chunk_info['voice_config'] = {'voice_name': assigned_voice, 'display_name': assigned_voice}
-                    
+                    # Load voice assignments from project_info.json if available
+                    project_info_file = os.path.join(project_path, "project_info.json")
+                    if os.path.exists(project_info_file):
+                        try:
+                            with open(project_info_file, 'r') as f:
+                                project_info = json.load(f)
+                                voice_assignments = project_info.get('voice_assignments', {})
+                                
+                                # Look up the actual voice assigned to this character
+                                assigned_voice = voice_assignments.get(character_name)
+                                if not assigned_voice:
+                                    character_with_spaces = character_name.replace('_', ' ')
+                                    assigned_voice = voice_assignments.get(character_with_spaces, character_name)
+                                
+                                chunk_info['assigned_voice'] = assigned_voice
+                                chunk_info['voice_config'] = {'voice_name': assigned_voice, 'display_name': assigned_voice}
+                        except Exception as e:
+                            print(f"⚠️ Warning: Could not load voice assignments: {str(e)}")
+                            chunk_info['assigned_voice'] = 'unknown'
+                            chunk_info['voice_config'] = {}
+                    else:
+                        chunk_info['assigned_voice'] = 'unknown'
+                        chunk_info['voice_config'] = {}
                 else:
                     chunk_info['character'] = 'unknown'
                     chunk_info['assigned_voice'] = 'unknown'
@@ -2573,8 +2590,49 @@ def get_project_chunks(project_name: str) -> list:
             
             chunks.append(chunk_info)
     
+    elif project_info_data and project_info_data.get('chunks'):
+        # Project with project_info.json format (newer multi-voice projects)
+        print(f"📋 Processing project_info.json format for '{project_name}'")
+        
+        project_chunks = project_info_data.get('chunks', [])
+        voice_assignments = project_info_data.get('voice_assignments', {})
+        
+        # For each chunk file, create chunk info with text from project_info.json
+        for i, audio_file in enumerate(chunk_files):
+            actual_chunk_num = extract_chunk_num_from_filename(audio_file)
+            
+            # Find the matching chunk in project_info.json by chunk number
+            chunk_text = "Text not available"
+            character_name = "unknown"
+            voice_name = "unknown"
+            
+            for info_chunk in project_chunks:
+                if isinstance(info_chunk, dict) and info_chunk.get('chunk_num') == actual_chunk_num:
+                    chunk_text = info_chunk.get('text', 'Text not available')
+                    character_name = info_chunk.get('character_name', 'unknown')
+                    voice_name = info_chunk.get('voice_name', 'unknown')
+                    break
+            
+            # For multi-voice, we need to load the actual voice config from the voice library
+            # This will be loaded dynamically during regeneration since we don't have voice_library_path here
+            chunk_info = {
+                'chunk_num': actual_chunk_num,
+                'audio_file': os.path.join(project_path, audio_file),
+                'audio_filename': audio_file,
+                'text': chunk_text,
+                'has_metadata': True,
+                'project_type': 'multi_voice',
+                'voice_info': {},
+                'character': character_name,
+                'assigned_voice': voice_name,
+                'voice_config': {'voice_name': voice_name, 'display_name': voice_name}  # Will be loaded dynamically
+            }
+            
+            chunks.append(chunk_info)
+    
     else:
         # Legacy project without metadata
+        print(f"ℹ️ No metadata found - treating as legacy project")
         for i, audio_file in enumerate(chunk_files):
             # Extract the actual chunk number from the filename instead of using the enumerate index
             actual_chunk_num = extract_chunk_num_from_filename(audio_file)
@@ -2590,6 +2648,24 @@ def get_project_chunks(project_name: str) -> list:
             }
             chunks.append(chunk_info)
     
+    # If we still have no chunks but we do have chunk_files, force legacy mode
+    if not chunks and chunk_files:
+        print(f"⚠️ Forcing legacy mode for {len(chunk_files)} files")
+        for i, audio_file in enumerate(chunk_files):
+            actual_chunk_num = extract_chunk_num_from_filename(audio_file)
+            
+            chunk_info = {
+                'chunk_num': actual_chunk_num,
+                'audio_file': os.path.join(project_path, audio_file),
+                'audio_filename': audio_file,
+                'text': "Legacy project - original text not available",
+                'has_metadata': False,
+                'project_type': 'unknown',
+                'voice_info': {}
+            }
+            chunks.append(chunk_info)
+    
+    print(f"📊 Returning {len(chunks)} chunks for project '{project_name}'")
     return chunks
 
 def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_library_path: str, custom_text: str = None) -> tuple:
@@ -2651,16 +2727,20 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
             voice_display = voice_config.get('display_name', 'Unknown')
             
         elif project_type == 'multi_voice':
-            # Multi-voice project - use the voice config from the chunk
-            voice_config = chunk.get('voice_config', {})
+            # Multi-voice project - load voice config dynamically from voice library
             character_name = chunk.get('character', 'unknown')
             assigned_voice = chunk.get('assigned_voice', 'unknown')
             
+            if not assigned_voice or assigned_voice == 'unknown':
+                return None, f"❌ No voice assigned to character '{character_name}'"
+            
+            # Load voice config dynamically from voice library
+            voice_config = get_voice_config(voice_library_path, assigned_voice)
             if not voice_config:
-                return None, f"❌ Voice configuration not found for character '{character_name}' (assigned voice: '{assigned_voice}')"
+                return None, f"❌ Could not load voice configuration for '{assigned_voice}' (character: '{character_name}')"
             
             if not voice_config.get('audio_file'):
-                return None, f"❌ Audio file not found for character '{character_name}' (assigned voice: '{assigned_voice}')"
+                return None, f"❌ No audio file found for voice '{assigned_voice}' (character: '{character_name}')"
             
             # Check if audio file actually exists
             audio_file_path = voice_config.get('audio_file')
@@ -3997,7 +4077,15 @@ def create_audiobook_with_original_voice_metadata(
             # Save individual chunk
             chunk_filename = f"{safe_project_name}_{chunk_num:03d}.wav"
             chunk_path = os.path.join(project_dir, chunk_filename)
-            sf.write(chunk_path, audio_data, model.sr)
+            
+            # Convert tensor to numpy array if needed
+            if hasattr(audio_data, 'cpu'):
+                audio_np = audio_data.squeeze(0).cpu().numpy()
+            else:
+                audio_np = audio_data
+            
+            # Use soundfile to write the chunk, which is more robust
+            sf.write(chunk_path, audio_np, model.sr)
             
             chunk_info = {
                 'chunk_num': chunk_num,
@@ -4008,7 +4096,10 @@ def create_audiobook_with_original_voice_metadata(
             chunk_info_list.append(chunk_info)
             
         except Exception as e:
-            return None, f"❌ Error generating chunk {chunk_num}: {str(e)}"
+            import traceback
+            traceback.print_exc()
+            error_message = f"❌ Error generating chunk {chunk_num}: {e}"
+            return None, error_message, None, None
         
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == len(chunks_to_process):
@@ -4031,7 +4122,30 @@ def create_audiobook_with_original_voice_metadata(
             )
     
     # Combine all audio for preview
-    combined_audio = np.concatenate(audio_chunks)
+    # Convert all chunks to numpy arrays first
+    numpy_chunks = []
+    for chunk in audio_chunks:
+        if hasattr(chunk, 'cpu'):
+            numpy_chunks.append(chunk.squeeze(0).cpu().numpy())
+        else:
+            numpy_chunks.append(chunk)
+    
+    combined_audio = np.concatenate(numpy_chunks)
+    
+    # Clean up audio data to prevent Gradio display errors
+    # Remove any NaN or infinite values
+    combined_audio = np.nan_to_num(combined_audio, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # Ensure audio is in valid range [-1, 1]
+    combined_audio = np.clip(combined_audio, -1.0, 1.0)
+    
+    # If audio is tensor, convert to numpy
+    if hasattr(combined_audio, 'cpu'):
+        combined_audio = combined_audio.cpu().numpy()
+    
+    # Ensure it's float32 for Gradio
+    combined_audio = combined_audio.astype(np.float32)
+    
     total_words = len(text_content.split())
     duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
     success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {original_voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
