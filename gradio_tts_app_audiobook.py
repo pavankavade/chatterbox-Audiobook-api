@@ -1274,7 +1274,7 @@ def create_multi_voice_audiobook(model, text_content, voice_library_path, projec
                 'voice_name': voice_name,
                 'character_name': voice_name,
                 'voice_display': voice_config['display_name'],
-                'text': chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
+                'text': chunk_text,  # Store full text for regeneration purposes
                 'word_count': chunk_words
             })
         
@@ -1584,7 +1584,7 @@ def create_multi_voice_audiobook_with_assignments(
             completed_chunks.add(i)
         chunk_info.append({
             'chunk_num': i+1, 'voice_name': voice_name, 'character_name': character_name or voice_name,
-            'voice_display': voice_name, 'text': chunk_text[:100] + "..." if len(chunk_text) > 100 else chunk_text,
+            'voice_display': voice_name, 'text': chunk_text,  # Store full text for regeneration purposes
             'word_count': len(chunk_text.split())
         })
 
@@ -4085,13 +4085,14 @@ def create_audiobook_with_original_voice_metadata(
                 audio_np = audio_data
             
             # Use soundfile to write the chunk, which is more robust
-            sf.write(chunk_path, audio_np, model.sr)
+            sample_rate = getattr(model, "sr", 24000) if model else 24000
+            sf.write(chunk_path, audio_np, sample_rate)
             
             chunk_info = {
                 'chunk_num': chunk_num,
                 'text': chunk_text,
                 'filename': chunk_filename,
-                'duration': len(audio_data) / model.sr
+                'duration': len(audio_data) / sample_rate
             }
             chunk_info_list.append(chunk_info)
             
