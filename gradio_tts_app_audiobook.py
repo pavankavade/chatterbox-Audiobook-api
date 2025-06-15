@@ -2419,6 +2419,7 @@ def get_project_chunks(project_name: str) -> list:
     all_wav_files = [f for f in os.listdir(project_path) if f.endswith('.wav')]
     
     # Filter to only get numbered chunk files in format: projectname_001.wav, projectname_002.wav etc.
+    # Also handle multi-voice format: projectname_001_CHARACTER.wav
     chunk_files = []
     for wav_file in all_wav_files:
         # Skip complete files, backup files, and temp files
@@ -2427,18 +2428,27 @@ def get_project_chunks(project_name: str) -> list:
             'temp_regenerated_' in wav_file):
             continue
         
-        # Check if it matches the pattern: projectname_XXX.wav
+        # Check if it matches the pattern: projectname_XXX.wav OR projectname_XXX_CHARACTER.wav
         import re
-        pattern = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
-        if re.match(pattern, wav_file):
+        # Pattern for single voice: projectname_001.wav
+        pattern_single = rf'^{re.escape(project_name)}_(\d{{3}})\.wav$'
+        # Pattern for multi-voice: projectname_001_CHARACTER.wav
+        pattern_multi = rf'^{re.escape(project_name)}_(\d{{3}})_.*\.wav$'
+        
+        if re.match(pattern_single, wav_file) or re.match(pattern_multi, wav_file):
             chunk_files.append(wav_file)
     
     # Sort by chunk number (numerically, not lexicographically)
     def extract_chunk_num_from_filename(filename: str) -> int:
         import re
-        match = re.search(r'_(\d{3})\.wav$', filename)
+        # First try to match the pattern: projectname_XXX_character.wav (multi-voice)
+        match = re.search(rf'{re.escape(project_name)}_(\d{{3}})_.*\.wav$', filename)
         if not match:
-            match = re.search(r'_(\d+)\.wav$', filename)
+            # Then try: projectname_XXX.wav (single voice)
+            match = re.search(rf'{re.escape(project_name)}_(\d{{3}})\.wav$', filename)
+        if not match:
+            # Fallback: any _XXX pattern
+            match = re.search(r'_(\d+)', filename)
         if match:
             return int(match.group(1))
         return 0
@@ -2446,6 +2456,18 @@ def get_project_chunks(project_name: str) -> list:
     
     chunks = []
     metadata = project.get('metadata')
+    
+    # If no metadata.json, try to load from project_info.json (newer format)
+    project_info_data = None
+    if not metadata:
+        project_info_file = os.path.join(project_path, "project_info.json")
+        if os.path.exists(project_info_file):
+            try:
+                with open(project_info_file, 'r') as f:
+                    project_info_data = json.load(f)
+                    print(f"📋 Loading project from project_info.json for '{project_name}'")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not load project_info.json: {str(e)}")
     
     if metadata and metadata.get('chunks'):
         # Project with metadata - get original text chunks
@@ -2464,16 +2486,45 @@ def get_project_chunks(project_name: str) -> list:
                         voice_assignments = project_info.get('voice_assignments', {})
                 except Exception as e:
                     print(f"⚠️ Warning: Could not load voice assignments: {str(e)}")
+    
+    elif project_info_data and project_info_data.get('chunks'):
+        # Project with project_info.json format (newer multi-voice projects)
+        original_chunks = [chunk.get('text', 'Text not available') for chunk in project_info_data.get('chunks', [])]
+        project_type = 'multi_voice'  # project_info.json is typically for multi-voice
+        voice_assignments = project_info_data.get('voice_assignments', {})
+        
+        # Build voice_info from voice assignments and voice library
+        voice_info = {}
+        for character, voice_name in voice_assignments.items():
+            # We'll need to load voice config later for each chunk
+            voice_info[voice_name] = {'voice_name': voice_name, 'display_name': voice_name}
+        
+        metadata = {
+            'chunks': original_chunks,
+            'project_type': project_type,
+            'voice_info': voice_info
+        }
         
         for i, audio_file in enumerate(chunk_files):
             # Extract the actual chunk number from the filename instead of using the enumerate index
             actual_chunk_num = extract_chunk_num_from_filename(audio_file)
             
+            # Get text for this chunk
+            chunk_text = "Text not available"
+            if project_info_data and project_info_data.get('chunks'):
+                # For project_info.json format, find chunk by number
+                project_chunks = project_info_data.get('chunks', [])
+                matching_chunk = next((c for c in project_chunks if c.get('chunk_num') == actual_chunk_num), None)
+                if matching_chunk:
+                    chunk_text = matching_chunk.get('text', 'Text not available')
+            elif i < len(original_chunks):
+                chunk_text = original_chunks[i]
+            
             chunk_info = {
                 'chunk_num': actual_chunk_num,  # Use actual chunk number from filename
                 'audio_file': os.path.join(project_path, audio_file),
                 'audio_filename': audio_file,
-                'text': original_chunks[i] if i < len(original_chunks) else "Text not available",
+                'text': chunk_text,
                 'has_metadata': True,
                 'project_type': project_type,
                 'voice_info': voice_info
@@ -2488,11 +2539,16 @@ def get_project_chunks(project_name: str) -> list:
                     chunk_info['character'] = character_name
                     
                     # Look up the actual voice assigned to this character
-                    assigned_voice = voice_assignments.get(character_name, character_name)
+                    # Try exact match first, then try with spaces instead of underscores
+                    assigned_voice = voice_assignments.get(character_name)
+                    if not assigned_voice:
+                        character_with_spaces = character_name.replace('_', ' ')
+                        assigned_voice = voice_assignments.get(character_with_spaces, character_name)
                     chunk_info['assigned_voice'] = assigned_voice
                     
-                    # Get the voice config for the assigned voice
-                    chunk_info['voice_config'] = voice_info.get(assigned_voice, {})
+                    # Get the voice config for the assigned voice - need to load from voice library
+                    # We'll load this dynamically when needed during regeneration
+                    chunk_info['voice_config'] = {'voice_name': assigned_voice, 'display_name': assigned_voice}
                     
                 else:
                     chunk_info['character'] = 'unknown'
