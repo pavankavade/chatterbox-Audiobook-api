@@ -2428,6 +2428,17 @@ def get_project_chunks(project_name: str) -> list:
             'temp_regenerated_' in wav_file):
             continue
         
+        # Check file size - skip empty/corrupted files
+        file_path = os.path.join(project_path, wav_file)
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size < 100:  # Skip files smaller than 100 bytes (likely corrupted)
+                print(f"⚠️ Skipping corrupted/empty file: {wav_file} ({file_size} bytes)")
+                continue
+        except OSError:
+            print(f"⚠️ Skipping inaccessible file: {wav_file}")
+            continue
+        
         # Check if it matches the pattern: projectname_XXX.wav OR projectname_XXX_CHARACTER.wav
         import re
         # Pattern for single voice: projectname_001.wav
@@ -3292,6 +3303,47 @@ def cleanup_project_temp_files(project_name: str) -> str:
     except Exception as e:
         return f"❌ Error cleaning up temp files: {str(e)}"
 
+def cleanup_corrupted_audio_files(project_name: str) -> str:
+    """Clean up corrupted/empty audio files in a project directory"""
+    if not project_name:
+        return "❌ No project name provided"
+    
+    try:
+        project_dir = os.path.join("audiobook_projects", project_name)
+        if not os.path.exists(project_dir):
+            return f"❌ Project directory not found: {project_name}"
+        
+        # Find corrupted files
+        corrupted_files = []
+        for file in os.listdir(project_dir):
+            if file.endswith('.wav'):
+                file_path = os.path.join(project_dir, file)
+                try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size < 100:  # Files smaller than 100 bytes are likely corrupted
+                        corrupted_files.append((file, file_size))
+                except OSError:
+                    corrupted_files.append((file, 0))  # Inaccessible files
+        
+        if not corrupted_files:
+            return f"✅ No corrupted audio files found in project '{project_name}'"
+        
+        # Delete corrupted files
+        deleted_count = 0
+        for corrupted_file, file_size in corrupted_files:
+            try:
+                file_path = os.path.join(project_dir, corrupted_file)
+                os.remove(file_path)
+                deleted_count += 1
+                print(f"🗑️ Deleted corrupted file: {corrupted_file} ({file_size} bytes)")
+            except Exception as e:
+                print(f"⚠️ Could not delete {corrupted_file}: {str(e)}")
+        
+        return f"✅ Cleaned up {deleted_count} corrupted audio files from project '{project_name}'"
+        
+    except Exception as e:
+        return f"❌ Error cleaning up corrupted files: {str(e)}"
+
 def handle_audio_trimming(audio_data) -> tuple:
     """Handle audio trimming from Gradio audio component
     
@@ -3887,6 +3939,11 @@ def create_audiobook_with_original_voice_metadata(
     # Check for existing project and resume if requested
     existing_chunks = []
     if resume:
+        # Clean up any corrupted files first
+        cleanup_result = cleanup_corrupted_audio_files(safe_project_name)
+        if "cleaned up" in cleanup_result.lower():
+            print(f"🧹 {cleanup_result}")
+        
         existing_chunks = get_project_chunks(safe_project_name)
         if existing_chunks:
             print(f"🔄 Resuming project with {len(existing_chunks)} existing chunks")
@@ -6547,6 +6604,13 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
             for chunk_file in chunk_files:
                 try:
                     chunk_path = os.path.join(project_dir, chunk_file)
+                    
+                    # Check file size first to avoid loading corrupted files
+                    file_size = os.path.getsize(chunk_path)
+                    if file_size < 100:  # Skip very small files
+                        problematic_chunks.append(f"{chunk_file}: File too small ({file_size} bytes) - likely corrupted")
+                        continue
+                    
                     audio, sr = librosa.load(chunk_path, sr=None)
                     duration = len(audio) / sr
                     durations.append(duration)
