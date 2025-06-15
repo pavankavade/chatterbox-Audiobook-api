@@ -2323,6 +2323,11 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
     if not project_name:
         return None, "❌ No project selected"
     
+    # Clean up any corrupted files first
+    cleanup_result = cleanup_corrupted_audio_files(project_name)
+    if "cleaned up" in cleanup_result.lower():
+        print(f"🧹 {cleanup_result}")
+    
     projects = get_existing_projects()
     project = next((p for p in projects if p['name'] == project_name), None)
     
