@@ -134,32 +134,127 @@ def generate(model, text, audio_prompt_path, exaggeration, temperature, seed_num
     if seed_num != 0:
         set_seed(int(seed_num))
 
+    # Import pause processing functions
+    from src.audiobook.processing import create_silence_audio
+    import re
+
+    # Split text on line breaks to insert pauses between segments
+    segments = re.split(r'(\n+)', text)
+    audio_segments = []
+    sample_rate = getattr(model, "sr", 24000) if model else 24000
+    total_pauses_added = 0
+    
     # Prepare conditionals from audio prompt
     conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
     
-    wav = model.generate(
-        text,
-        conds,
-        exaggeration=exaggeration,
-        temperature=temperature,
-        cfg_weight=cfgw,
-        min_p=min_p,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-    )
-    return (getattr(model, "sr", 24000) if model else 24000, wav.squeeze(0).numpy())
+    for segment in segments:
+        if not segment:
+            continue
+            
+        if '\n' in segment:
+            # This is a line break segment - convert to pause
+            num_breaks = segment.count('\n')
+            pause_duration = num_breaks * 0.1  # 0.1 seconds per line break
+            if pause_duration > 0:
+                pause_audio = create_silence_audio(pause_duration, sample_rate)
+                audio_segments.append(pause_audio)
+                total_pauses_added += pause_duration
+                print(f"🔇 Adding {pause_duration:.1f}s pause ({num_breaks} returns)")
+        else:
+            # This is actual text - generate audio
+            text_segment = segment.strip()
+            if text_segment:
+                wav = model.generate(
+                    text_segment,
+                    conds,
+                    exaggeration=exaggeration,
+                    temperature=temperature,
+                    cfg_weight=cfgw,
+                    min_p=min_p,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                )
+                audio_np = wav.squeeze(0).numpy()
+                audio_segments.append(audio_np)
+    
+    # Combine all audio segments
+    if audio_segments:
+        final_audio = np.concatenate(audio_segments)
+        if total_pauses_added > 0:
+            print(f"🔇 Total pause time distributed: {total_pauses_added:.1f}s")
+        return (sample_rate, final_audio)
+    else:
+        # Fallback to original behavior if no segments
+        wav = model.generate(
+            text,
+            conds,
+            exaggeration=exaggeration,
+            temperature=temperature,
+            cfg_weight=cfgw,
+            min_p=min_p,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+        )
+        return (sample_rate, wav.squeeze(0).numpy())
 
 def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, temperature, cfg_weight, min_p=0.05, top_p=1.0, repetition_penalty=1.2):
     """Generate audio with automatic CPU fallback for problematic CUDA errors"""
     
-    # First try GPU if available
-    if DEVICE == "cuda":
-        try:
-            clear_gpu_memory()
-            # Prepare conditionals from audio prompt
-            conds = model.prepare_conditionals(audio_prompt_path, exaggeration)
-            
-            wav = model.generate(
+    # Import pause processing functions
+    from src.audiobook.processing import create_silence_audio
+    import re
+
+    # Split text on line breaks to insert pauses between segments
+    segments = re.split(r'(\n+)', text)
+    
+    # Helper function to generate audio with distributed pauses
+    def generate_with_pauses(generation_model, device_name):
+        audio_segments = []
+        sample_rate = getattr(generation_model, "sr", 24000) if generation_model else 24000
+        total_pauses_added = 0
+        
+        # Prepare conditionals from audio prompt
+        conds = generation_model.prepare_conditionals(audio_prompt_path, exaggeration)
+        
+        for segment in segments:
+            if not segment:
+                continue
+                
+            if '\n' in segment:
+                # This is a line break segment - convert to pause
+                num_breaks = segment.count('\n')
+                pause_duration = num_breaks * 0.1  # 0.1 seconds per line break
+                if pause_duration > 0:
+                    pause_audio = create_silence_audio(pause_duration, sample_rate)
+                    audio_segments.append(pause_audio)
+                    total_pauses_added += pause_duration
+                    print(f"🔇 Adding {pause_duration:.1f}s pause ({num_breaks} returns) - {device_name}")
+            else:
+                # This is actual text - generate audio
+                text_segment = segment.strip()
+                if text_segment:
+                    wav = generation_model.generate(
+                        text_segment,
+                        conds,
+                        exaggeration=exaggeration,
+                        temperature=temperature,
+                        cfg_weight=cfg_weight,
+                        min_p=min_p,
+                        top_p=top_p,
+                        repetition_penalty=repetition_penalty,
+                    )
+                    audio_np = wav.squeeze(0).numpy()
+                    audio_segments.append(audio_np)
+        
+        # Combine all audio segments
+        if audio_segments:
+            final_audio = np.concatenate(audio_segments)
+            if total_pauses_added > 0:
+                print(f"🔇 Total pause time distributed: {total_pauses_added:.1f}s ({device_name})")
+            return torch.from_numpy(final_audio).unsqueeze(0)
+        else:
+            # Fallback to original behavior if no segments
+            wav = generation_model.generate(
                 text,
                 conds,
                 exaggeration=exaggeration,
@@ -169,6 +264,13 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
             )
+            return wav
+    
+    # First try GPU if available
+    if DEVICE == "cuda":
+        try:
+            clear_gpu_memory()
+            wav = generate_with_pauses(model, "GPU")
             return wav, "GPU"
         except RuntimeError as e:
             if ("srcIndex < srcSelectDimSize" in str(e) or 
@@ -184,19 +286,7 @@ def generate_with_cpu_fallback(model, text, audio_prompt_path, exaggeration, tem
     try:
         # Load CPU model if needed
         cpu_model = ChatterboxTTS.from_pretrained("cpu")
-        # Prepare conditionals from audio prompt
-        conds = cpu_model.prepare_conditionals(audio_prompt_path, exaggeration)
-        
-        wav = cpu_model.generate(
-            text,
-            conds,
-            exaggeration=exaggeration,
-            temperature=temperature,
-            cfg_weight=cfg_weight,
-            min_p=min_p,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-        )
+        wav = generate_with_pauses(cpu_model, "CPU")
         return wav, "CPU"
     except Exception as e:
         raise RuntimeError(f"Both GPU and CPU generation failed: {str(e)}")
@@ -656,8 +746,14 @@ def create_audiobook(
     if not voice_config['audio_file']:
         return None, f"❌ No audio file found for voice '{voice_config['display_name']}'"
 
-    # Prepare chunking
-    chunks = chunk_text_by_sentences(text_content)
+    # Import pause processing functions
+    from src.audiobook.processing import chunk_text_with_line_break_priority, create_silence_audio
+
+    # Chunk text with line breaks taking priority over sentence breaks
+    chunks_with_pauses, total_pause_duration = chunk_text_with_line_break_priority(text_content, max_words=50, pause_duration=0.1)
+    
+    # Extract just the text parts for processing
+    chunks = [chunk_data['text'] for chunk_data in chunks_with_pauses]
     total_chunks = len(chunks)
     if total_chunks == 0:
         return None, "❌ No text chunks to process"
@@ -740,7 +836,16 @@ def create_audiobook(
                 except Exception as e:
                     print(f"⚠️ Volume normalization failed for chunk {i+1}: {str(e)}")
             
-            audio_chunks.append(audio_np)
+            # Add pause if this chunk had line breaks
+            chunk_pause_duration = chunks_with_pauses[i]['pause_duration']
+            if chunk_pause_duration > 0:
+                sample_rate = getattr(model, "sr", 24000) if model else 24000
+                pause_audio = create_silence_audio(chunk_pause_duration, sample_rate)
+                audio_with_pause = np.concatenate([audio_np, pause_audio])
+                audio_chunks.append(audio_with_pause)
+                print(f"🔇 Chunk {i+1}: Added {chunk_pause_duration:.1f}s pause after speech")
+            else:
+                audio_chunks.append(audio_np)
             # Save this chunk immediately
             fname = os.path.join(project_dir, chunk_filenames[i])
             with wave.open(fname, 'wb') as wav_file:
@@ -775,12 +880,16 @@ def create_audiobook(
                 chunks=chunks,
                 project_type="single_voice"
             )
-    # Combine all audio for preview (just concatenate)
+    # Combine all audio for preview (pauses already included in chunks)
+    sample_rate = getattr(model, "sr", 24000) if model else 24000
     combined_audio = np.concatenate(audio_chunks)
+    
     total_words = len(text_content.split())
-    duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
-    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
-    return (getattr(model, "sr", 24000) if model else 24000, combined_audio), success_msg
+    duration_minutes = len(combined_audio) // sample_rate // 60
+    
+    pause_info = f" (including {total_pause_duration:.1f}s of pauses)" if total_pause_duration > 0 else ""
+    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes{pause_info}\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
+    return (sample_rate, combined_audio), success_msg
 
 def load_voice_for_tts(voice_library_path, voice_name):
     """Load a voice profile for TTS tab - returns settings for sliders"""
@@ -1545,18 +1654,38 @@ def create_multi_voice_audiobook_with_assignments(
         error_msg = "❌ Missing required fields or voice assignments. Ensure text is entered, project name is set, and voices are assigned after analyzing text."
         return None, None, error_msg, None
 
-    # Parse the text and map voices
-    segments = parse_multi_voice_text(text_content)
-    mapped_segments = []
-    for character_name, text_segment in segments:
+    # Import pause processing functions
+    from src.audiobook.processing import chunk_multi_voice_text_with_line_break_priority, create_silence_audio
+
+    # Chunk multi-voice text with line breaks taking priority
+    initial_max_words = 30 if DEVICE == "cuda" else 40
+    segments_with_pauses, total_pause_duration = chunk_multi_voice_text_with_line_break_priority(
+        text_content, max_words=initial_max_words, pause_duration=0.1
+    )
+    
+    # Add debugging output to see what pause processing found
+    print(f"🔍 DEBUG: chunk_multi_voice_text_with_line_break_priority results:")
+    print(f"🔍 DEBUG: Total segments: {len(segments_with_pauses)}")
+    print(f"🔍 DEBUG: Total pause duration: {total_pause_duration:.1f}s")
+    for i, segment in enumerate(segments_with_pauses):
+        print(f"🔍 DEBUG: Segment {i+1}: voice='{segment['voice']}', pause={segment['pause_duration']:.1f}s, text='{segment['text'][:50]}...'")
+    
+    # Map character names to assigned voices and preserve pause information
+    mapped_segments_with_pauses = []
+    for segment_data in segments_with_pauses:
+        character_name = segment_data['voice']
         if character_name in voice_assignments:
             actual_voice = voice_assignments[character_name]
-            mapped_segments.append((actual_voice, text_segment))
+            mapped_segments_with_pauses.append({
+                'voice': actual_voice,
+                'text': segment_data['text'],
+                'pause_duration': segment_data['pause_duration']
+            })
         else:
             return None, None, f"❌ No voice assignment found for character '{character_name}'", None
 
-    initial_max_words = 30 if DEVICE == "cuda" else 40
-    chunks = chunk_multi_voice_segments(mapped_segments, max_words=initial_max_words)
+    # Convert to the format expected by the rest of the function
+    chunks = [(segment['voice'], segment['text']) for segment in mapped_segments_with_pauses]
     chunks = _filter_problematic_short_chunks(chunks, voice_assignments)
     total_chunks = len(chunks)
     if not chunks:
@@ -1666,7 +1795,16 @@ def create_multi_voice_audiobook_with_assignments(
                 except Exception as e:
                     print(f"⚠️ Volume normalization failed for chunk {i+1}: {str(e)}")
             
-            audio_chunks.append(audio_np)
+            # Add pause if this chunk had line breaks
+            chunk_pause_duration = mapped_segments_with_pauses[i]['pause_duration']
+            if chunk_pause_duration > 0:
+                sample_rate = getattr(processing_model, "sr", 24000) if processing_model else 24000
+                pause_audio = create_silence_audio(chunk_pause_duration, sample_rate)
+                audio_with_pause = np.concatenate([audio_np, pause_audio])
+                audio_chunks.append(audio_with_pause)
+                print(f"🔇 Chunk {i+1} ({voice_name}): Added {chunk_pause_duration:.1f}s pause after speech")
+            else:
+                audio_chunks.append(audio_np)
             # Save this chunk immediately
             fname = os.path.join(project_dir, chunk_filenames[i])
             with wave.open(fname, 'wb') as wav_file:
@@ -1691,15 +1829,18 @@ def create_multi_voice_audiobook_with_assignments(
                     'voice_assignments': voice_assignments, 'characters': list(voice_assignments.keys()),
                     'chunks': chunk_info
                 }, f, indent=2)
-    # Combine all audio for preview (just concatenate)
+    # Combine all audio for preview (pauses already included in chunks)
     combined_audio = np.concatenate(audio_chunks)
+    
     total_words = sum(len(chunk[1].split()) for chunk in chunks)
     duration_minutes = len(combined_audio) // processing_model.sr // 60
     assignment_summary = "\n".join([f"🎭 [{char}] → {assigned_voice}" for char, assigned_voice in voice_assignments.items()])
+    
+    pause_info = f" (including {total_pause_duration:.1f}s of pauses)" if total_pause_duration > 0 else ""
     success_msg = (f"✅ Multi-voice audiobook created successfully!\n"
                    f"📊 {total_words:,} words in {total_chunks} chunks\n"
                    f"🎭 Characters: {len(voice_assignments)}\n"
-                   f"⏱️ Duration: ~{duration_minutes} minutes\n"
+                   f"⏱️ Duration: ~{duration_minutes} minutes{pause_info}\n"
                    f"📁 Saved to: {project_dir}\n"
                    f"🎵 Files: {len(audio_chunks)} audio chunks\n"
                    f"\nVoice Assignments:\n{assignment_summary}")
@@ -2382,6 +2523,38 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             )
             
             audio_output = wav.squeeze(0).cpu().numpy()
+            
+            # Apply volume normalization if enabled (single voice sample)
+            if voice_config.get('normalization_enabled', False):
+                target_level = voice_config.get('target_level_db', -18.0)
+                try:
+                    # Analyze current audio level
+                    level_info = analyze_audio_level(audio_output, getattr(model, "sr", 24000) if model else 24000)
+                    current_level = level_info['rms_db']
+                    
+                    # Normalize audio
+                    audio_output = normalize_audio_to_target(audio_output, current_level, target_level)
+                    print(f"🎚️ Project sample: Volume normalized from {current_level:.1f}dB to {target_level:.1f}dB")
+                except Exception as e:
+                    print(f"⚠️ Volume normalization failed for project sample: {str(e)}")
+            
+            # Add pause processing for line breaks in sample text
+            from src.audiobook.processing import create_silence_audio
+            line_break_count = text_to_regenerate.count('\n')
+            
+            # Debug: show what text we're analyzing for sample
+            print(f"🔍 Sample text analysis: '{text_to_regenerate[:50]}{'...' if len(text_to_regenerate) > 50 else ''}'")
+            print(f"🔍 Found {line_break_count} line breaks in sample text")
+            
+            if line_break_count > 0:
+                pause_duration = line_break_count * 0.1  # 0.1 seconds per line break
+                sample_rate = getattr(model, "sr", 24000) if model else 24000
+                pause_audio = create_silence_audio(pause_duration, sample_rate)
+                audio_output = np.concatenate([audio_output, pause_audio])
+                print(f"🔇 Project sample: Added {pause_duration:.1f}s pause after speech (from {line_break_count} returns)")
+            else:
+                print(f"🔍 No line breaks found in sample text")
+            
             status_msg = f"✅ Sample regenerated successfully!\n🎭 Voice: {voice_config.get('display_name', 'Unknown')}\n📝 Text: {text_to_regenerate[:100]}..."
             
             return (getattr(model, "sr", 24000) if model else 24000, audio_output), status_msg
@@ -2406,6 +2579,37 @@ def regenerate_project_sample(model, project_name: str, voice_library_path: str,
             )
             
             audio_output = wav.squeeze(0).cpu().numpy()
+            
+            # Apply volume normalization if enabled (multi-voice sample)
+            if voice_config.get('normalization_enabled', False):
+                target_level = voice_config.get('target_level_db', -18.0)
+                try:
+                    # Analyze current audio level
+                    level_info = analyze_audio_level(audio_output, getattr(model, "sr", 24000) if model else 24000)
+                    current_level = level_info['rms_db']
+                    
+                    # Normalize audio
+                    audio_output = normalize_audio_to_target(audio_output, current_level, target_level)
+                    print(f"🎚️ Multi-voice sample: Volume normalized from {current_level:.1f}dB to {target_level:.1f}dB")
+                except Exception as e:
+                    print(f"⚠️ Volume normalization failed for multi-voice sample: {str(e)}")
+            
+            # Add pause processing for line breaks in sample text (multi-voice)
+            line_break_count = text_to_regenerate.count('\n')
+            
+            # Debug: show what text we're analyzing for multi-voice sample
+            print(f"🔍 Multi-voice sample analysis: '{text_to_regenerate[:50]}{'...' if len(text_to_regenerate) > 50 else ''}'")
+            print(f"🔍 Found {line_break_count} line breaks in multi-voice sample")
+            
+            if line_break_count > 0:
+                pause_duration = line_break_count * 0.1  # 0.1 seconds per line break
+                sample_rate = getattr(model, "sr", 24000) if model else 24000
+                pause_audio = create_silence_audio(pause_duration, sample_rate)
+                audio_output = np.concatenate([audio_output, pause_audio])
+                print(f"🔇 Multi-voice sample: Added {pause_duration:.1f}s pause after speech (from {line_break_count} returns)")
+            else:
+                print(f"🔍 No line breaks found in multi-voice sample")
+            
             status_msg = f"✅ Sample regenerated successfully!\n🎭 Voice: {voice_config.get('display_name', first_voice)}\n📝 Text: {text_to_regenerate[:100]}..."
             
             return (getattr(model, "sr", 24000) if model else 24000, audio_output), status_msg
@@ -2764,9 +2968,48 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
         # Save regenerated audio to a temporary file
         audio_output = wav.squeeze(0).cpu().numpy()
         
-        # Apply volume normalization if enabled in voice profile
-        if voice_config.get('normalization_enabled', False):
+        # Check for project-specific volume normalization settings first
+        project_metadata = None
+        project_dir = None
+        output_dir = "audiobook_projects"
+        safe_project_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '-', '_')).rstrip().replace(' ', '_')
+        project_dir = os.path.join(output_dir, safe_project_name)
+        
+        if os.path.exists(project_dir):
+            project_metadata = load_project_metadata(project_dir)
+        
+        # Determine volume normalization settings
+        # Priority: 1) Project metadata settings 2) Voice profile settings
+        normalization_enabled = False
+        target_level = -18.0
+        
+        if project_metadata:
+            # Check if the project was created with volume normalization
+            voice_info = project_metadata.get('voice_info', {})
+            if project_type == 'single_voice':
+                # For single voice, voice_info should contain the voice config used
+                if isinstance(voice_info, dict) and 'normalization_enabled' in voice_info:
+                    normalization_enabled = voice_info.get('normalization_enabled', False)
+                    target_level = voice_info.get('target_level_db', -18.0)
+                    print(f"🎚️ Using project-specific volume settings: enabled={normalization_enabled}, target={target_level}dB")
+            elif project_type == 'multi_voice':
+                # For multi-voice, check if any character's voice config has normalization
+                character_name = chunk.get('character', 'unknown')
+                if character_name in voice_info:
+                    char_voice_info = voice_info[character_name]
+                    if 'normalization_enabled' in char_voice_info:
+                        normalization_enabled = char_voice_info.get('normalization_enabled', False)
+                        target_level = char_voice_info.get('target_level_db', -18.0)
+                        print(f"🎚️ Using project-specific volume settings for {character_name}: enabled={normalization_enabled}, target={target_level}dB")
+        
+        # Fallback to voice profile settings if no project settings found
+        if not normalization_enabled and voice_config.get('normalization_enabled', False):
+            normalization_enabled = True
             target_level = voice_config.get('target_level_db', -18.0)
+            print(f"🎚️ Using voice profile volume settings: enabled={normalization_enabled}, target={target_level}dB")
+        
+        # Apply volume normalization if enabled
+        if normalization_enabled:
             try:
                 # Analyze current audio level
                 level_info = analyze_audio_level(audio_output, getattr(model, "sr", 24000) if model else 24000)
@@ -2777,6 +3020,30 @@ def regenerate_single_chunk(model, project_name: str, chunk_num: int, voice_libr
                 print(f"🎚️ Regenerated chunk {chunk_num}: Volume normalized from {current_level:.1f}dB to {target_level:.1f}dB")
             except Exception as e:
                 print(f"⚠️ Volume normalization failed for regenerated chunk {chunk_num}: {str(e)}")
+        else:
+            print(f"🎚️ No volume normalization applied to regenerated chunk {chunk_num}")
+            
+        
+        # Add pause processing for line breaks in regenerated text
+        from src.audiobook.processing import create_silence_audio
+        
+        # Count line breaks more carefully, including trailing ones
+        # Use the original custom text if provided, otherwise use the text from chunk
+        original_text = custom_text if custom_text and custom_text.strip() else chunk['text']
+        line_break_count = original_text.count('\n')
+        
+        # Debug: show what text we're analyzing
+        print(f"🔍 Analyzing text for pauses: '{original_text[:50]}{'...' if len(original_text) > 50 else ''}'")
+        print(f"🔍 Found {line_break_count} line breaks in original text")
+        
+        if line_break_count > 0:
+            pause_duration = line_break_count * 0.1  # 0.1 seconds per line break
+            sample_rate = getattr(model, "sr", 24000) if model else 24000
+            pause_audio = create_silence_audio(pause_duration, sample_rate)
+            audio_output = np.concatenate([audio_output, pause_audio])
+            print(f"🔇 Regenerated chunk {chunk_num}: Added {pause_duration:.1f}s pause after speech (from {line_break_count} returns)")
+        else:
+            print(f"🔍 No line breaks found in text for chunk {chunk_num}")  
         
         # Create temporary file path
         project_dir = os.path.dirname(chunk['audio_file'])
@@ -4033,8 +4300,14 @@ def create_audiobook_with_original_voice_metadata(
         if existing_chunks:
             print(f"🔄 Resuming project with {len(existing_chunks)} existing chunks")
     
-    # Chunk the text
-    chunks = chunk_text_by_sentences(text_content, max_words=50)
+    # Import pause processing functions
+    from src.audiobook.processing import chunk_text_with_line_break_priority, create_silence_audio
+
+    # Chunk text with line breaks taking priority over sentence breaks
+    chunks_with_pauses, total_pause_duration = chunk_text_with_line_break_priority(text_content, max_words=50, pause_duration=0.1)
+    
+    # Extract just the text parts for processing
+    chunks = [chunk_data['text'] for chunk_data in chunks_with_pauses]
     total_chunks = len(chunks)
     
     if not chunks:
@@ -4072,6 +4345,26 @@ def create_audiobook_with_original_voice_metadata(
             if audio_data is None:
                 return None, f"❌ Failed to generate audio for chunk {chunk_num}"
             
+            # Convert tensor to numpy array if needed for pause processing
+            if hasattr(audio_data, 'cpu'):
+                audio_np = audio_data.squeeze(0).cpu().numpy()
+            else:
+                audio_np = audio_data
+            
+            # Add pause if this chunk had line breaks
+            chunk_pause_duration = chunks_with_pauses[chunk_num-1]['pause_duration']  # chunk_num is 1-based
+            if chunk_pause_duration > 0:
+                sample_rate = getattr(model, "sr", 24000) if model else 24000
+                pause_audio = create_silence_audio(chunk_pause_duration, sample_rate)
+                audio_with_pause = np.concatenate([audio_np, pause_audio])
+                # Convert back to tensor if original was tensor
+                if hasattr(audio_data, 'cpu'):
+                    import torch
+                    audio_data = torch.tensor(audio_with_pause).unsqueeze(0)
+                else:
+                    audio_data = audio_with_pause
+                print(f"🔇 Chunk {chunk_num}: Added {chunk_pause_duration:.1f}s pause after speech")
+            
             audio_chunks.append(audio_data)
             
             # Save individual chunk
@@ -4104,7 +4397,7 @@ def create_audiobook_with_original_voice_metadata(
         
         # Autosave every N chunks
         if (i + 1) % autosave_interval == 0 or (i + 1) == len(chunks_to_process):
-            # Save project metadata with ORIGINAL voice name
+            # Save project metadata with ORIGINAL voice name and preserve volume settings
             voice_info = {
                 'voice_name': original_voice_name,  # Use original voice name, not temporary
                 'display_name': original_voice_config['display_name'],
@@ -4113,6 +4406,12 @@ def create_audiobook_with_original_voice_metadata(
                 'cfg_weight': original_voice_config['cfg_weight'],
                 'temperature': original_voice_config['temperature']
             }
+            
+            # Include volume normalization settings if they were applied
+            if voice_config.get('normalization_enabled', False):
+                voice_info['normalization_enabled'] = voice_config.get('normalization_enabled', False)
+                voice_info['target_level_db'] = voice_config.get('target_level_db', -18.0)
+                print(f"🎚️ Saving volume settings to project metadata: enabled={voice_info['normalization_enabled']}, target={voice_info['target_level_db']}dB")
             save_project_metadata(
                 project_dir=project_dir,
                 project_name=safe_project_name,
@@ -4149,7 +4448,9 @@ def create_audiobook_with_original_voice_metadata(
     
     total_words = len(text_content.split())
     duration_minutes = len(combined_audio) // (getattr(model, "sr", 24000) if model else 24000) // 60
-    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {original_voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
+    
+    pause_info = f" (including {total_pause_duration:.1f}s of pauses)" if total_pause_duration > 0 else ""
+    success_msg = f"✅ Audiobook created successfully!\n🎭 Voice: {original_voice_config['display_name']}\n📊 {total_words:,} words in {total_chunks} chunks\n⏱️ Duration: ~{duration_minutes} minutes{pause_info}\n📁 Saved to: {project_dir}\n🎵 Files: {len(audio_chunks)} audio chunks\n💾 Metadata saved for regeneration"
     return (getattr(model, "sr", 24000) if model else 24000, combined_audio), success_msg
 
 def create_audiobook_with_volume_settings(model, text_content, voice_library_path, selected_voice, project_name, 
@@ -4219,12 +4520,12 @@ def create_multi_voice_audiobook_with_original_voice_metadata(
             
             metadata = load_project_metadata(project_dir)
             if metadata:
-                # Update voice_info to use original voice names
+                # Update voice_info to use original voice names and preserve volume settings
                 original_voice_info = {}
                 for character, original_voice_name in original_voice_assignments.items():
                     original_voice_config = get_voice_config(voice_library_path, original_voice_name)
                     if original_voice_config:
-                        original_voice_info[character] = {
+                        char_voice_info = {
                             'voice_name': original_voice_name,  # Use original voice name
                             'display_name': original_voice_config['display_name'],
                             'audio_file': original_voice_config['audio_file'],
@@ -4232,6 +4533,17 @@ def create_multi_voice_audiobook_with_original_voice_metadata(
                             'cfg_weight': original_voice_config['cfg_weight'],
                             'temperature': original_voice_config['temperature']
                         }
+                        
+                        # Check if the temp voice has volume settings and preserve them
+                        temp_voice_name = temp_voice_assignments.get(character)
+                        if temp_voice_name:
+                            temp_voice_config = get_voice_config(voice_library_path, temp_voice_name)
+                            if temp_voice_config and temp_voice_config.get('normalization_enabled', False):
+                                char_voice_info['normalization_enabled'] = temp_voice_config.get('normalization_enabled', False)
+                                char_voice_info['target_level_db'] = temp_voice_config.get('target_level_db', -18.0)
+                                print(f"🎚️ Saving volume settings for {character}: enabled={char_voice_info['normalization_enabled']}, target={char_voice_info['target_level_db']}dB")
+                        
+                        original_voice_info[character] = char_voice_info
                 
                 # Update metadata with original voice info
                 metadata['voice_info'] = original_voice_info

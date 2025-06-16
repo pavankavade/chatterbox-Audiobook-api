@@ -68,6 +68,128 @@ The web interface will open automatically in your browser at `http://localhost:7
 - **Multi-Voice Parsing**: Parse character dialogue automatically
 - **Text Validation**: Ensure proper formatting before generation
 - **📋 Queue Management** ⭐ *NEW*: Batch process multiple text files sequentially
+- **🔇 Return Pause System** ⭐ *NEW*: Automatic pause insertion based on line breaks for natural speech flow
+
+---
+
+## 🎭 Custom Audiobook Processing Pipeline ⭐ *NEW*
+
+Our advanced text processing pipeline transforms your written content into natural-sounding audiobooks with intelligent pause placement and character flow management.
+
+### 🔇 **Return Pause System**
+
+**Automatic pause insertion based on your text formatting** - Every line break (`\n`) in your text automatically adds a 0.1-second pause to the generated audio, creating natural speech rhythms without manual intervention.
+
+#### **How It Works**
+- **Line Break Detection**: System automatically counts all line breaks in your text
+- **Pause Calculation**: Each return adds exactly 0.1 seconds of silence
+- **Accumulative Pauses**: Multiple consecutive line breaks create longer pauses
+- **Universal Support**: Works with single-voice, multi-voice, and batch processing
+
+#### **Example Text Formatting**
+```
+[Narrator] The sun was setting over the hills.
+
+[Character1] "We need to find shelter soon."
+
+[Character2] "I see a cave up ahead.
+Let's hurry before it gets dark."
+
+
+[Narrator] They rushed toward the cave, hearts pounding.
+```
+**Result**: Natural pauses between dialogue, emphasis pauses for dramatic effect, and smooth character transitions.
+
+### 📝 **Text Formatting Best Practices**
+
+#### **🎭 Multi-Voice Dialogue Structure**
+```
+[Character Name] Dialogue content here.
+
+[Another Character] Response content here.
+Multiple lines can be used for the same character.
+
+[Narrator] Descriptive text and scene setting.
+```
+
+#### **🎪 Natural Flow Techniques**
+- **Paragraph Breaks**: Use double line breaks for scene transitions
+- **Emphasis Pauses**: Add extra returns before important revelations
+- **Character Separation**: Single returns between different speakers
+- **Breathing Room**: Natural pauses for complex concepts or emotional moments
+
+#### **📖 Single Voice Formatting**
+```
+Chapter content flows naturally here.
+
+New paragraphs create natural pauses.
+
+
+Extended pauses can emphasize dramatic moments.
+
+Regular text continues with normal pacing.
+```
+
+### 🔄 **Processing Pipeline Features**
+
+#### **🧠 Intelligent Text Analysis**
+- **Line Break Preservation**: Maintains your formatting intentions throughout processing
+- **Character Assignment**: Automatically maps voice tags to selected voice profiles
+- **Chunk Optimization**: Breaks long texts into optimal segments while preserving pause timing
+- **Error Recovery**: Validates text and provides helpful formatting suggestions
+
+#### **⚡ Real-Time Processing**
+- **Live Feedback**: Console output shows exactly how many pauses are being added
+- **Debug Information**: Detailed logging of pause detection and application
+- **Progress Tracking**: Monitor pause processing alongside audio generation
+- **Quality Assurance**: Automatic validation of pause placement
+
+#### **🎚️ Professional Output**
+- **Seamless Integration**: Pauses blend naturally with generated speech
+- **Volume Consistency**: Silence segments match the audio output specifications
+- **Format Compatibility**: Works with all supported audio formats and quality settings
+- **Project Preservation**: Pause information saved in project metadata for regeneration
+
+### 💡 **Pro Tips for Better Audiobooks**
+
+#### **🎯 Dialogue Formatting**
+- **Character Consistency**: Always use the same character name format `[Name]`
+- **Natural Breaks**: Place returns where a human reader would naturally pause
+- **Scene Transitions**: Use multiple returns (2-3) for major scene changes
+- **Emotional Beats**: Add single returns before/after emotional dialogue
+
+#### **📚 Chapter Structure**
+```
+Chapter 1: The Beginning
+
+Opening paragraph with scene setting.
+
+"Character dialogue with natural flow."
+
+Descriptive narrative continues.
+
+
+Major scene transition with extended pause.
+
+New section begins here.
+```
+
+#### **🎪 Advanced Techniques**
+- **Cliffhangers**: Use extended pauses before revealing crucial information
+- **Action Sequences**: Shorter, punchy sentences with minimal pauses for intensity
+- **Contemplative Moments**: Longer pauses for reflection and character development
+- **Comedic Timing**: Strategic pauses before punchlines or comedic reveals
+
+### 🔍 **Debug Output Examples**
+
+When generating your audiobook, watch for these helpful console messages:
+```
+🔇 Detected 15 line breaks → 1.5s total pause time
+🔇 Line breaks detected in [Character1]: +0.3s pause (from 3 returns)
+🔇 Chunk 2 (Narrator): Added 0.2s pause after speech
+```
+
+This real-time feedback helps you understand exactly how your formatting translates to audio timing.
 
 ---
 
@@ -152,13 +274,20 @@ Enhanced the core text-to-speech engine for better reliability:
 
 ## 🎯 Workflow
 
-1. **📝 Prepare Text**: Format your story with proper chapter breaks
+1. **📝 Prepare Text**: Format your story with proper chapter breaks and strategic line breaks for natural pauses
 2. **🎤 Select Voices**: Choose or clone voices for your characters  
 3. **🎚️ Configure Volume**: Set professional volume levels and normalization
 4. **⚙️ Configure Settings**: Adjust quality, speed, and processing options
-5. **🎧 Generate Audio**: Create your audiobook with advanced TTS
+5. **🎧 Generate Audio**: Create your audiobook with advanced TTS and automatic pause insertion
 6. **🧹 Clean & Optimize**: Use smart cleanup tools for perfect audio
 7. **📦 Export**: Get your finished audiobook ready for distribution
+
+### 🎭 **Enhanced Multi-Voice Workflow**
+1. **📝 Format Dialogue**: Use `[Character]` tags and strategic line breaks for natural flow
+2. **🔇 Add Return Pauses**: Place line breaks where you want natural speech pauses (0.1s each)
+3. **🎤 Assign Voices**: Map each character to their voice profile
+4. **⚡ Process with Intelligence**: Watch console output for pause detection feedback
+5. **🎧 Review & Adjust**: Listen to generated audio and refine formatting if needed
 
 ### 📋 **Batch Processing Workflow** ⭐ *NEW*
 1. **📚 Organize Chapters**: Split your book into individual text files

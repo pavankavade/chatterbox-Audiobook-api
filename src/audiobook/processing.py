@@ -418,49 +418,511 @@ def save_audio_chunks(audio_chunks: List[np.ndarray], sample_rate: int, project_
 
 # PHASE 4 REFACTOR: Adding extract_audio_segment function from gradio_tts_app_audiobook.py
 def extract_audio_segment(audio_data, start_time: float = None, end_time: float = None) -> tuple:
-    """Extract a specific time segment from audio data
+    """Extract a segment from audio data.
     
     Args:
-        audio_data: Tuple of (sample_rate, audio_array)
-        start_time: Start time in seconds (None = beginning)
-        end_time: End time in seconds (None = end)
+        audio_data: Numpy array of audio data
+        start_time: Start time in seconds (None for beginning)
+        end_time: End time in seconds (None for end)
         
     Returns:
-        tuple: (extracted_audio_data, status_message)
+        tuple: (status_message, extracted_audio_data)
     """
-    if not audio_data or not isinstance(audio_data, tuple) or len(audio_data) != 2:
-        return None, "❌ Invalid audio data"
-    
     try:
-        sample_rate, audio_array = audio_data
+        sample_rate = 24000  # Default sample rate
         
-        if not hasattr(audio_array, 'shape'):
-            return None, "❌ Invalid audio array"
+        if audio_data is None or len(audio_data) == 0:
+            return "❌ No audio data to extract from", None
+            
+        total_duration = len(audio_data) / sample_rate
         
-        # Handle multi-dimensional arrays
-        if len(audio_array.shape) > 1:
-            # Take first channel if stereo
-            audio_array = audio_array[:, 0] if audio_array.shape[1] > 0 else audio_array.flatten()
+        start_sample = int(start_time * sample_rate) if start_time else 0
+        end_sample = int(end_time * sample_rate) if end_time else len(audio_data)
         
-        total_samples = len(audio_array)
-        total_duration = total_samples / sample_rate
+        # Validate bounds
+        start_sample = max(0, min(start_sample, len(audio_data)))
+        end_sample = max(start_sample, min(end_sample, len(audio_data)))
         
-        # Calculate sample indices
-        start_sample = 0 if start_time is None else int(start_time * sample_rate)
-        end_sample = total_samples if end_time is None else int(end_time * sample_rate)
+        extracted_audio = audio_data[start_sample:end_sample]
         
-        # Ensure valid bounds
-        start_sample = max(0, min(start_sample, total_samples))
-        end_sample = max(start_sample, min(end_sample, total_samples))
-        
-        # Extract segment
-        trimmed_audio = audio_array[start_sample:end_sample]
-        
-        trimmed_duration = len(trimmed_audio) / sample_rate
-        
-        status_msg = f"✅ Extracted segment: {trimmed_duration:.2f}s (from {start_time or 0:.2f}s to {end_time or total_duration:.2f}s)"
-        
-        return (sample_rate, trimmed_audio), status_msg
+        if len(extracted_audio) == 0:
+            return "❌ Invalid time range - no audio extracted", None
+            
+        extracted_duration = len(extracted_audio) / sample_rate
+        return f"✅ Extracted {extracted_duration:.2f}s of audio", extracted_audio
         
     except Exception as e:
-        return None, f"❌ Error extracting segment: {str(e)}" 
+        return f"❌ Error extracting audio segment: {str(e)}", None
+
+
+def process_text_for_pauses(text: str, pause_duration: float = 0.1) -> tuple:
+    """Process text to count returns and calculate total pause time.
+    
+    Args:
+        text: Input text to process
+        pause_duration: Duration in seconds per line break (default 0.1)
+        
+    Returns:
+        tuple: (processed_text, return_count, total_pause_duration)
+    """
+    # Count line breaks (both \n and \r\n)
+    return_count = text.count('\n') + text.count('\r')
+    total_pause_duration = return_count * pause_duration
+    
+    # Clean up text for TTS (normalize line breaks but keep content)
+    processed_text = text.replace('\r\n', '\n').replace('\r', '\n')
+    # Replace multiple consecutive newlines with single space to avoid empty chunks
+    processed_text = re.sub(r'\n+', ' ', processed_text).strip()
+    
+    print(f"🔇 Detected {return_count} line breaks → {total_pause_duration:.1f}s total pause time")
+    
+    return processed_text, return_count, total_pause_duration
+
+
+def create_silence_audio(duration: float, sample_rate: int = 24000) -> np.ndarray:
+    """Create silence audio of specified duration.
+    
+    Args:
+        duration: Duration in seconds
+        sample_rate: Sample rate for the audio
+        
+    Returns:
+        numpy array of silence audio
+    """
+    num_samples = int(duration * sample_rate)
+    return np.zeros(num_samples, dtype=np.float32)
+
+
+def insert_pauses_between_chunks(audio_chunks: List[np.ndarray], 
+                                return_count: int, 
+                                sample_rate: int = 24000,
+                                pause_duration: float = 0.1) -> np.ndarray:
+    """Insert pauses between audio chunks based on return count.
+    
+    Args:
+        audio_chunks: List of audio chunk arrays
+        return_count: Number of returns detected in original text
+        sample_rate: Sample rate for audio
+        pause_duration: Duration per return in seconds
+        
+    Returns:
+        Combined audio with pauses inserted
+    """
+    if not audio_chunks:
+        return np.array([], dtype=np.float32)
+    
+    if return_count == 0:
+        # No pauses needed, just concatenate
+        return np.concatenate(audio_chunks)
+    
+    # Calculate how to distribute pauses
+    # For simplicity, we'll add all pause time at the end
+    # In a more sophisticated approach, we could distribute pauses throughout
+    total_pause_time = return_count * pause_duration
+    pause_audio = create_silence_audio(total_pause_time, sample_rate)
+    
+    print(f"🔇 Adding {total_pause_time:.1f}s pause ({return_count} returns × {pause_duration}s each)")
+    
+    # Concatenate audio chunks with pause at the end
+    combined_audio = np.concatenate(audio_chunks)
+    final_audio = np.concatenate([combined_audio, pause_audio])
+    
+    return final_audio
+
+
+def process_text_with_distributed_pauses(text: str, max_words: int = 50, 
+                                        pause_duration: float = 0.1) -> tuple:
+    """Process text and distribute pauses throughout chunks based on line breaks.
+    
+    Args:
+        text: Input text to process
+        max_words: Maximum words per chunk
+        pause_duration: Duration per line break in seconds
+        
+    Returns:
+        tuple: (chunks_with_pauses, total_return_count, total_pause_duration)
+    """
+    # First, process text to understand pause requirements
+    processed_text, return_count, total_pause_duration = process_text_for_pauses(text, pause_duration)
+    
+    # Split into lines to track where pauses should be
+    lines = text.split('\n')
+    chunks_with_pauses = []
+    
+    current_chunk = ""
+    current_word_count = 0
+    pauses_for_chunk = 0
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            pauses_for_chunk += 1  # Empty line counts as a pause
+            continue
+            
+        line_words = len(line.split())
+        
+        # If adding this line would exceed max_words, finalize current chunk
+        if current_word_count > 0 and current_word_count + line_words > max_words:
+            if current_chunk.strip():
+                chunks_with_pauses.append({
+                    'text': current_chunk.strip(),
+                    'pauses': pauses_for_chunk
+                })
+            current_chunk = line
+            current_word_count = line_words
+            pauses_for_chunk = 0
+        else:
+            current_chunk += " " + line if current_chunk else line
+            current_word_count += line_words
+        
+        # Add pause if not the last line
+        if i < len(lines) - 1:
+            pauses_for_chunk += 1
+    
+    # Add the last chunk if it exists
+    if current_chunk.strip():
+        chunks_with_pauses.append({
+            'text': current_chunk.strip(),
+            'pauses': pauses_for_chunk
+        })
+    
+    return chunks_with_pauses, return_count, total_pause_duration
+
+
+def map_line_breaks_to_chunks(original_text: str, chunks: List[str], pause_duration: float = 0.1) -> tuple:
+    """Map line breaks from original text to corresponding chunks.
+    
+    Args:
+        original_text: Original text with line breaks
+        chunks: List of text chunks created by sentence chunking
+        pause_duration: Duration per line break in seconds
+        
+    Returns:
+        tuple: (chunk_pause_map, total_pause_duration)
+            chunk_pause_map: Dict mapping chunk index to pause duration
+            total_pause_duration: Total pause time across all chunks
+    """
+    import re
+    
+    chunk_pause_map = {}
+    total_pause_duration = 0.0
+    
+    # Create a version of original text for matching (remove extra whitespace but keep structure)
+    normalized_original = re.sub(r'\s+', ' ', original_text.replace('\n', ' ')).strip()
+    
+    # Track position in original text
+    original_position = 0
+    
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_normalized = chunk.strip()
+        if not chunk_normalized:
+            continue
+            
+        # Find this chunk in the original text
+        chunk_start = normalized_original.find(chunk_normalized, original_position)
+        if chunk_start == -1:
+            # Fallback: try to find it without position constraint
+            chunk_start = normalized_original.find(chunk_normalized)
+        
+        if chunk_start == -1:
+            # Can't find chunk, no pauses for this one
+            continue
+            
+        chunk_end = chunk_start + len(chunk_normalized)
+        
+        # Count line breaks in the corresponding section of original text
+        # Map back to original text position
+        orig_text_section_start = 0
+        orig_text_section_end = len(original_text)
+        
+        # Find the corresponding section in original text
+        words_before = len(normalized_original[:chunk_start].split())
+        words_in_chunk = len(chunk_normalized.split())
+        
+        # Find the section in original text that corresponds to this chunk
+        original_words = original_text.split()
+        if words_before < len(original_words):
+            # Find the start position in original text
+            words_section = ' '.join(original_words[words_before:words_before + words_in_chunk])
+            section_start = original_text.find(words_section)
+            if section_start != -1:
+                section_end = section_start + len(words_section)
+                # Count line breaks in this section and the gap after it (until next chunk)
+                next_chunk_start = section_end
+                if chunk_idx < len(chunks) - 1:
+                    next_chunk_text = chunks[chunk_idx + 1].strip()
+                    next_chunk_pos = original_text.find(next_chunk_text, section_end)
+                    if next_chunk_pos != -1:
+                        next_chunk_start = next_chunk_pos
+                
+                # Count line breaks from end of current chunk to start of next chunk
+                gap_text = original_text[section_end:next_chunk_start]
+                line_breaks = gap_text.count('\n')
+                
+                if line_breaks > 0:
+                    pause_time = line_breaks * pause_duration
+                    chunk_pause_map[chunk_idx] = pause_time
+                    total_pause_duration += pause_time
+        
+        original_position = chunk_end
+    
+    return chunk_pause_map, total_pause_duration 
+
+
+def chunk_text_by_sentences_local(text, max_words=50):
+    """Local copy of sentence chunking to avoid circular imports."""
+    import re
+    
+    # Split into sentences using common sentence endings
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    
+    chunks = []
+    current_chunk = ""
+    current_word_count = 0
+    
+    for sentence in sentences:
+        if not sentence.strip():
+            continue
+            
+        sentence_words = len(sentence.split())
+        
+        # If adding this sentence would exceed max_words and we have content, start a new chunk
+        if current_word_count > 0 and current_word_count + sentence_words > max_words:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+            current_word_count = sentence_words
+        else:
+            current_chunk += " " + sentence if current_chunk else sentence
+            current_word_count += sentence_words
+    
+    # Add the last chunk if it exists
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+def chunk_text_with_line_break_priority(text: str, max_words: int = 50, pause_duration: float = 0.1) -> tuple:
+    """Chunk text with line breaks taking priority over sentence breaks.
+    
+    This function first splits on line breaks, then applies sentence chunking
+    within each line break segment if needed.
+    
+    Args:
+        text: Input text with line breaks
+        max_words: Maximum words per chunk
+        pause_duration: Duration per line break in seconds
+        
+    Returns:
+        tuple: (chunks_with_pauses, total_pause_duration)
+            chunks_with_pauses: List of dicts with 'text' and 'pause_duration' keys
+            total_pause_duration: Total pause time across all chunks
+    """
+    import re
+    
+    chunks_with_pauses = []
+    total_pause_duration = 0.0
+    
+    # Split text by line breaks, keeping track of consecutive breaks
+    line_segments = re.split(r'(\n+)', text)
+    
+    for i, segment in enumerate(line_segments):
+        if not segment:
+            continue
+            
+        # Check if this segment is line breaks
+        if re.match(r'\n+', segment):
+            # Count the number of line breaks for pause calculation
+            line_break_count = segment.count('\n')
+            pause_time = line_break_count * pause_duration
+            
+            # Add pause to the previous chunk if it exists
+            if chunks_with_pauses:
+                chunks_with_pauses[-1]['pause_duration'] += pause_time
+                total_pause_duration += pause_time
+                print(f"🔇 Line breaks detected: +{pause_time:.1f}s pause (from {line_break_count} returns)")
+            continue
+        
+        # This is actual text content - chunk it by sentences if needed
+        text_content = segment.strip()
+        if not text_content:
+            continue
+            
+        # Apply sentence chunking to this segment
+        text_chunks = chunk_text_by_sentences_local(text_content, max_words)
+        
+        # Add these chunks with initial pause duration of 0
+        for chunk in text_chunks:
+            if chunk.strip():
+                chunks_with_pauses.append({
+                    'text': chunk.strip(),
+                    'pause_duration': 0.0
+                })
+    
+    return chunks_with_pauses, total_pause_duration 
+
+
+def parse_multi_voice_text_local(text):
+    """Local copy of multi-voice text parsing to avoid circular imports."""
+    import re
+    
+    # Pattern to match [CharacterName] at the beginning of lines
+    pattern = r'^\[([^\]]+)\]\s*(.*?)(?=^\[|\Z)'
+    matches = re.findall(pattern, text, re.MULTILINE | re.DOTALL)
+    
+    if not matches:
+        # If no voice tags found, treat as single narrator
+        return [("Narrator", text.strip())]
+    
+    segments = []
+    for character_name, content in matches:
+        # DON'T strip content to preserve line breaks for pause processing
+        # Only strip leading/trailing spaces, but preserve newlines
+        content = content.rstrip(' \t').lstrip(' \t')
+        if content:
+            segments.append((character_name.strip(), content))
+    
+    return segments
+
+def chunk_multi_voice_text_with_line_break_priority(text: str, max_words: int = 30, pause_duration: float = 0.1) -> tuple:
+    """Chunk multi-voice text with line breaks taking priority over sentence breaks.
+    
+    Args:
+        text: Input text with voice tags and line breaks
+        max_words: Maximum words per chunk
+        pause_duration: Duration per line break in seconds
+        
+    Returns:
+        tuple: (segments_with_pauses, total_pause_duration)
+            segments_with_pauses: List of dicts with 'voice', 'text', and 'pause_duration' keys
+            total_pause_duration: Total pause time across all segments
+    """
+    import re
+    
+    # Add debugging output for the input text
+    print(f"🔍 DEBUG: chunk_multi_voice_text_with_line_break_priority input:")
+    print(f"🔍 DEBUG: Input text length: {len(text)} characters")
+    print(f"🔍 DEBUG: Line breaks in input: {text.count(chr(10))} \\n chars, {text.count(chr(13))} \\r chars")
+    print(f"🔍 DEBUG: First 200 chars: {repr(text[:200])}")
+    
+    # NEW APPROACH: Process line breaks in the full text before voice parsing
+    # Split the entire text by voice segments while preserving line breaks
+    segments_with_pauses = []
+    total_pause_duration = 0.0
+    
+    # Find all voice segments with their positions, preserving everything in between
+    voice_pattern = r'(\[([^\]]+)\]\s*)'
+    split_parts = re.split(voice_pattern, text)
+    
+    print(f"🔍 DEBUG: Split text into {len(split_parts)} parts")
+    for i, part in enumerate(split_parts):
+        print(f"🔍 DEBUG: Part {i}: {repr(part[:50])}")
+    
+    current_voice = None
+    
+    i = 0
+    while i < len(split_parts):
+        part = split_parts[i]
+        
+        # Check if this part is a voice tag match
+        if i + 2 < len(split_parts) and re.match(r'\[([^\]]+)\]\s*', part):
+            # This is a voice tag, extract the voice name
+            current_voice = split_parts[i + 1]  # The captured voice name
+            print(f"🔍 DEBUG: Found voice tag: '{current_voice}'")
+            
+            # The content is in the next part after the voice tag and whitespace
+            content_part = split_parts[i + 2] if i + 2 < len(split_parts) else ""
+            
+            # Process the content with line break awareness
+            if content_part:
+                processed_segments = process_voice_content_with_line_breaks(
+                    current_voice, content_part, max_words, pause_duration
+                )
+                
+                for segment in processed_segments:
+                    segments_with_pauses.append(segment)
+                    total_pause_duration += segment['pause_duration']
+            
+            i += 3  # Skip voice tag, voice name, and content
+        else:
+            # This is content between voice tags or before first voice tag
+            if current_voice and part.strip():
+                # Content continuation for current voice
+                processed_segments = process_voice_content_with_line_breaks(
+                    current_voice, part, max_words, pause_duration
+                )
+                
+                for segment in processed_segments:
+                    segments_with_pauses.append(segment)
+                    total_pause_duration += segment['pause_duration']
+            elif not current_voice and part.strip():
+                # Content before any voice tag - treat as narrator
+                processed_segments = process_voice_content_with_line_breaks(
+                    "Narrator", part, max_words, pause_duration
+                )
+                
+                for segment in processed_segments:
+                    segments_with_pauses.append(segment)
+                    total_pause_duration += segment['pause_duration']
+            
+            i += 1
+    
+    print(f"🔍 DEBUG: Final result: {len(segments_with_pauses)} segments, {total_pause_duration:.1f}s total pause time")
+    
+    return segments_with_pauses, total_pause_duration
+
+
+def process_voice_content_with_line_breaks(voice_name: str, content: str, max_words: int, pause_duration: float) -> list:
+    """Process voice content while preserving line breaks for pauses."""
+    import re
+    
+    segments = []
+    
+    # Split content by line breaks, keeping the line breaks
+    line_segments = re.split(r'(\n+)', content)
+    
+    print(f"🔍 DEBUG: Processing voice '{voice_name}' content split into {len(line_segments)} line segments")
+    
+    for i, line_segment in enumerate(line_segments):
+        if not line_segment:
+            continue
+            
+        # Check if this segment is line breaks
+        if re.match(r'\n+', line_segment):
+            # Count the number of line breaks for pause calculation
+            line_break_count = line_segment.count('\n')
+            pause_time = line_break_count * pause_duration
+            
+            print(f"🔍 DEBUG: Found {line_break_count} line breaks, calculating {pause_time:.1f}s pause")
+            
+            # Add pause to the previous segment if it exists and has the same voice
+            if segments and segments[-1]['voice'] == voice_name:
+                segments[-1]['pause_duration'] += pause_time
+                print(f"🔇 Line breaks detected in [{voice_name}]: +{pause_time:.1f}s pause (from {line_break_count} returns)")
+            else:
+                print(f"🔍 DEBUG: No previous segment to add pause to, or voice mismatch")
+            continue
+        
+        # This is actual text content - chunk it by sentences if needed
+        text_content = line_segment.strip()
+        if not text_content:
+            continue
+            
+        print(f"🔍 DEBUG: Processing text content: '{text_content[:50]}...'")
+        
+        # Apply sentence chunking to this segment
+        text_chunks = chunk_text_by_sentences_local(text_content, max_words)
+        
+        print(f"🔍 DEBUG: chunk_text_by_sentences_local produced {len(text_chunks)} chunks")
+        
+        # Add these chunks with voice assignment and initial pause duration of 0
+        for chunk in text_chunks:
+            if chunk.strip():
+                segments.append({
+                    'voice': voice_name,
+                    'text': chunk.strip(),
+                    'pause_duration': 0.0
+                })
+                print(f"🔍 DEBUG: Added segment: voice='{voice_name}', text='{chunk.strip()[:30]}...', pause=0.0")
+    
+    return segments 
