@@ -1859,6 +1859,7 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
             {},
             [],
             empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
+            empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
             gr.Button("🔍 Validate Voice Assignments", interactive=False),
             "❌ Add text first"
         )
@@ -1874,6 +1875,7 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
             voice_counts,
             [],
             empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
+            empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
             gr.Button("🔍 Validate Voice Assignments", interactive=False),
             "❌ No voices in library"
         )
@@ -1887,6 +1889,7 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
             voice_counts,
             [],
             empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
+            empty_dropdown, empty_dropdown, empty_dropdown, empty_dropdown,
             gr.Button("🔍 Validate Voice Assignments", interactive=False),
             "❌ No voices in library"
         )
@@ -1900,9 +1903,10 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
     # Get character names (excluding "No Voice Tag")
     character_names = [name for name in voice_counts.keys() if name != "No Voice Tag"]
     
-    # Create dropdown components for up to 6 characters
+    # Create dropdown components for ALL characters (unlimited!)
     dropdown_components = []
-    for i in range(6):
+    # Note: We still create exactly 10 dropdowns for UI compatibility, but the validation now handles unlimited characters
+    for i in range(10):
         if i < len(character_names):
             character_name = character_names[i]
             word_count = voice_counts[character_name]
@@ -1922,9 +1926,12 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
             )
         dropdown_components.append(dropdown)
     
-    # Create summary message
+    # Create summary message with unlimited character support
     total_words = sum(voice_counts.values())
-    summary_msg = f"✅ Found {len(character_names)} characters with {total_words:,} total words\n" + breakdown_text
+    if len(character_names) > 10:
+        summary_msg = f"🚀 UNLIMITED MODE: Found {len(character_names)} characters with {total_words:,} total words!\n🎭 Only first 10 shown in dropdowns, but ALL {len(character_names)} will be processed!\n" + breakdown_text
+    else:
+        summary_msg = f"✅ Found {len(character_names)} characters with {total_words:,} total words\n" + breakdown_text
     
     return (
         summary_msg,
@@ -1932,14 +1939,14 @@ def handle_multi_voice_analysis(text_content, voice_library_path):
         character_names,
         dropdown_components[0], dropdown_components[1], dropdown_components[2],
         dropdown_components[3], dropdown_components[4], dropdown_components[5],
+        dropdown_components[6], dropdown_components[7], dropdown_components[8], dropdown_components[9],
         gr.Button("🔍 Validate Voice Assignments", interactive=True),
         "✅ Analysis complete - assign voices above"
     )
 
-def validate_dropdown_voice_assignments(text_content, voice_library_path, project_name, voice_counts, character_names, 
-                                       char1_voice, char2_voice, char3_voice, char4_voice, char5_voice, char6_voice):
+def validate_dropdown_voice_assignments(text_content, voice_library_path, project_name, voice_counts, character_names, *dropdown_values):
     """
-    Validate voice assignments from character dropdowns
+    Validate voice assignments from character dropdowns - now supports unlimited characters
     """
     if not voice_counts or "No Voice Tag" in voice_counts:
         return (
@@ -1965,22 +1972,31 @@ def validate_dropdown_voice_assignments(text_content, voice_library_path, projec
             gr.Audio(visible=False)
         )
     
-    # Collect dropdown values
-    dropdown_values = [char1_voice, char2_voice, char3_voice, char4_voice, char5_voice, char6_voice]
-    
-    # Create voice assignments mapping
+    # Create voice assignments mapping - now handles unlimited characters
     voice_assignments = {}
     missing_assignments = []
+    auto_assigned = []
+    
+    # Get available voices for auto-assignment of characters beyond the first 10
+    available_voices = get_voice_profiles(voice_library_path)
+    available_voice_names = [voice['name'] for voice in available_voices] if available_voices else []
     
     for i, character_name in enumerate(character_names):
         if i < len(dropdown_values):
+            # Characters 1-10: Use dropdown assignments
             assigned_voice = dropdown_values[i]
             if not assigned_voice:
                 missing_assignments.append(character_name)
             else:
                 voice_assignments[character_name] = assigned_voice
         else:
-            missing_assignments.append(character_name)
+            # Characters 11+: Auto-assign to available voices in rotation
+            if available_voice_names:
+                auto_voice = available_voice_names[(i - 10) % len(available_voice_names)]
+                voice_assignments[character_name] = auto_voice
+                auto_assigned.append(f"[{character_name}] → {auto_voice}")
+            else:
+                missing_assignments.append(character_name)
     
     if missing_assignments:
         return (
@@ -1992,11 +2008,21 @@ def validate_dropdown_voice_assignments(text_content, voice_library_path, projec
     
     # All assignments valid
     total_words = sum(voice_counts.values())
-    assignment_summary = "\n".join([f"🎭 [{char}] → {voice_assignments[char]}" for char in character_names])
+    manual_assignments = [f"🎭 [{char}] → {voice_assignments[char]}" for char in character_names[:len(dropdown_values)]]
+    
+    # Build comprehensive assignment summary
+    assignment_summary = "\n".join(manual_assignments)
+    
+    success_message = f"✅ All characters assigned!\n📊 {total_words:,} words total\n📁 Project: {project_name.strip()}\n\n"
+    
+    if auto_assigned:
+        success_message += f"Manual Assignments (Dropdowns):\n{assignment_summary}\n\n🤖 Auto-Assigned Characters (11+):\n" + "\n".join(auto_assigned)
+    else:
+        success_message += f"Assignments:\n{assignment_summary}"
     
     return (
         gr.Button("🎵 Create Multi-Voice Audiobook", variant="primary", size="lg", interactive=True),
-        f"✅ All characters assigned!\n📊 {total_words:,} words total\n📁 Project: {project_name.strip()}\n\nAssignments:\n{assignment_summary}",
+        success_message,
         voice_assignments,
         gr.Audio(visible=True)
     )
@@ -5385,7 +5411,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                     with gr.Group():
                         gr.HTML("<h3>🎭 Voice Assignments</h3>")
                         
-                        # Character assignment dropdowns (max 6 common characters)
+                        # Character assignment dropdowns (max 10 characters)
                         with gr.Column():
                             char1_dropdown = gr.Dropdown(
                                 choices=[("No character found", None)],
@@ -5420,6 +5446,30 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                             char6_dropdown = gr.Dropdown(
                                 choices=[("No character found", None)],
                                 label="Character 6",
+                                visible=False,
+                                interactive=True
+                            )
+                            char7_dropdown = gr.Dropdown(
+                                choices=[("No character found", None)],
+                                label="Character 7",
+                                visible=False,
+                                interactive=True
+                            )
+                            char8_dropdown = gr.Dropdown(
+                                choices=[("No character found", None)],
+                                label="Character 8",
+                                visible=False,
+                                interactive=True
+                            )
+                            char9_dropdown = gr.Dropdown(
+                                choices=[("No character found", None)],
+                                label="Character 9",
+                                visible=False,
+                                interactive=True
+                            )
+                            char10_dropdown = gr.Dropdown(
+                                choices=[("No character found", None)],
+                                label="Character 10",
                                 visible=False,
                                 interactive=True
                             )
@@ -6268,6 +6318,7 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
         inputs=[multi_audiobook_text, voice_library_path_state],
         outputs=[voice_breakdown_display, voice_counts_state, character_names_state, 
                 char1_dropdown, char2_dropdown, char3_dropdown, char4_dropdown, char5_dropdown, char6_dropdown,
+                char7_dropdown, char8_dropdown, char9_dropdown, char10_dropdown,
                 validate_multi_btn, multi_audiobook_status]
     )
     
@@ -6275,7 +6326,8 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
     validate_multi_btn.click(
         fn=validate_dropdown_voice_assignments,
         inputs=[multi_audiobook_text, voice_library_path_state, multi_project_name, voice_counts_state, character_names_state,
-               char1_dropdown, char2_dropdown, char3_dropdown, char4_dropdown, char5_dropdown, char6_dropdown],
+               char1_dropdown, char2_dropdown, char3_dropdown, char4_dropdown, char5_dropdown, char6_dropdown,
+               char7_dropdown, char8_dropdown, char9_dropdown, char10_dropdown],
         outputs=[process_multi_btn, multi_audiobook_status, voice_assignments_state, multi_audiobook_output]
     )
     
