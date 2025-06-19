@@ -1,4 +1,4 @@
-# Multi-sample audiobook Instructions.
+# Multi-sample audiobook Instructions
 This is designed to be used in Google AI Studios, which is free. 
 - I normally set my thinking budget at 32K tokens. 
 - For larger books, break them into sections.
