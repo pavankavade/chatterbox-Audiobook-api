@@ -1,0 +1,29 @@
+# CPU-friendly requirements for Chatterbox TTS
+# We'll install CPU PyTorch separately to ensure correct wheel selection.
+
+# Core dependencies (cpu)
+numpy==1.26.0
+resampy==0.4.3
+librosa==0.10.0
+s3tokenizer
+transformers==4.46.3
+diffusers==0.29.0
+resemble-perth==1.0.1
+omegaconf==2.3.0
+conformer==0.3.2
+spacy>=3.4.0
+
+# Compatibility
+pydantic==2.10.6
+
+# Web/interface
+gradio
+
+# API additions
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+python-multipart>=0.0.6
+soundfile>=0.12.1
+
+# Notes: install torch separately after creating venv, e.g.:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu

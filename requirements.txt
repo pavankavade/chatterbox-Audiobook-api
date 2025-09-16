@@ -37,3 +37,7 @@ gradio
 # 3. For CPU-only installation, modify PyTorch lines to remove +cu121
 # 4. Install with: pip install -r requirements.txt
 # 5. After installation, install the package with: pip install -e . 
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+python-multipart>=0.0.6
+soundfile>=0.12.1
