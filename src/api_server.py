@@ -29,6 +29,8 @@ MODEL = {
     "tts": None,
     "device": "cpu",
     "loaded": False,
+    "last_requested_device": None,
+    "note": None,
 }
 
 
@@ -43,6 +45,8 @@ def load_models():
     MODEL["loaded"] = False
     MODEL["loading"] = False
     MODEL["lock"] = threading.Lock()
+    MODEL["last_requested_device"] = None
+    MODEL["note"] = None
     print("Startup complete: models are not loaded. Call /load_models to start loading.")
 
 
@@ -152,13 +156,37 @@ async def synthesize(
 
 
 @app.post("/load_models")
-async def load_models_endpoint(background: bool = True):
+async def load_models_endpoint(background: bool = True, device: str | None = None, force: bool = False):
     """Trigger model loading. If called with background=true (default) it returns immediately
     while loading proceeds in a background thread. If background=false this call will block
     until loading completes (may take a long time).
     """
+    # If a device is provided, set it before starting load
+    if device is not None:
+        desired = device.lower()
+        MODEL["last_requested_device"] = desired
+        note = None
+        if desired == "cuda":
+            if torch.cuda.is_available():
+                MODEL["device"] = "cuda"
+                note = "using cuda"
+            else:
+                MODEL["device"] = "cpu"
+                note = "cuda requested but unavailable; using cpu"
+        elif desired == "cpu":
+            MODEL["device"] = "cpu"
+            note = "cpu requested"
+        else:
+            note = f"unknown device '{desired}', keeping existing: {MODEL.get('device')}"
+        MODEL["note"] = note
+
     if MODEL.get("loaded"):
-        return {"status": "already_loaded"}
+        # If already loaded but force reload requested (e.g., to switch device), proceed
+        if not force:
+            return {"status": "already_loaded"}
+        # mark as not loaded to allow reload
+        MODEL["loaded"] = False
+
     if background:
         started = start_background_load()
         return {"status": started}
@@ -173,11 +201,22 @@ async def load_models_endpoint(background: bool = True):
 
 @app.get("/status")
 def status():
-    return {
+    info = {
         "loaded": MODEL.get("loaded", False),
         "loading": MODEL.get("loading", False),
         "device": MODEL.get("device", "cpu"),
+        "last_requested_device": MODEL.get("last_requested_device"),
+        "note": MODEL.get("note"),
+        "cuda_available": torch.cuda.is_available(),
     }
+    try:
+        if torch.cuda.is_available():
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+        else:
+            info["gpu_name"] = None
+    except Exception:
+        info["gpu_name"] = None
+    return info
 
 if __name__ == "__main__":
     port = 8000

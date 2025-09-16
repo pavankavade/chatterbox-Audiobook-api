@@ -110,16 +110,14 @@ ngrok.set_auth_token(os.environ["NGROK_AUTHTOKEN"])
 ```
 
 ```
-%%bash
-cd /kaggle/working/chatterbox-Audiobook-api/src
-python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
+
+%cd /kaggle/working/chatterbox-Audiobook-api/src
+!python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
 
 ```
 
 ```
-# python
-from pyngrok import ngrok
-public_url = ngrok.connect(8000, "http").public_url
-print("Public URL:", public_url)
+%cd /kaggle/working/chatterbox-Audiobook-api/src
+!python api_server.py
 
 ```
