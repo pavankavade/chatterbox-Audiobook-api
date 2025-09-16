@@ -3,14 +3,35 @@ Chatterbox TTS — API quick start
 This document shows how to run the API server locally, load models, and test endpoints.
 
 Prerequisites
-- Python 3.10+ (you already set up a venv at `chatterbox-Audiobook/.venv`)
+- Python 3.10+ (or newer)
 - Enough disk space for model files (hundreds of MB)
+
+Quick setup (first time)
+
+```bash
+# from repository root
+# create a local virtualenv if you don't already have one
+python -m venv .venv
+# activate the venv (Git Bash)
+source .venv/Scripts/activate
+python -V
+
+# upgrade pip tooling and install dependencies (CPU default)
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+# install the package in editable mode so local changes are picked up
+pip install -e .
+```
+
+Notes on CUDA vs CPU
+- The default `requirements.txt` installs CPU-only PyTorch wheels. If you have an NVIDIA GPU and want CUDA acceleration, edit `requirements.txt` to uncomment the CUDA index and `+cu121` wheel pins (or use the appropriate CUDA version for your machine) before running `pip install -r requirements.txt`.
+
 
 1) Activate virtualenv (Git Bash)
 
 ```bash
 # from repository root
-source chatterbox-Audiobook/.venv/Scripts/activate
+source .venv/Scripts/activate
 python -V
 ```
 
@@ -18,7 +39,7 @@ python -V
 
 ```bash
 # run from the src folder so imports resolve
-cd chatterbox-Audiobook/src
+cd src
 python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
 ```
 

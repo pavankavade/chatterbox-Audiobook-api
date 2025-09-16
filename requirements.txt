@@ -4,13 +4,15 @@
 
 # Core PyTorch dependencies with CUDA support (CUDA 12.1)
 # For CPU-only installation, remove the +cu121 suffixes and index-url
-torch==2.4.1+cu121
-torchvision==0.19.1+cu121
-torchaudio==2.4.1+cu121
---index-url https://download.pytorch.org/whl/cu121
+## By default install CPU-only PyTorch wheels (recommended for small/CI machines).
+# For CUDA support, uncomment the CUDA lines below and ensure drivers are installed.
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+# --index-url https://download.pytorch.org/whl/cu121
 
 # Core Chatterbox TTS dependencies (from pyproject.toml)
-numpy==1.26.0
+numpy==1.26.3
 resampy==0.4.3
 librosa==0.10.0
 s3tokenizer
@@ -41,3 +43,4 @@ fastapi>=0.95.0
 uvicorn[standard]>=0.22.0
 python-multipart>=0.0.6
 soundfile>=0.12.1
+pyngrok>=6.0.0
