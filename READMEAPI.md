@@ -84,3 +84,42 @@ Notes and troubleshooting
 
 Contact
 - If you need help debugging errors, copy/paste the uvicorn server terminal output and I can help interpret it.
+
+
+## Kaggle
+
+```
+%%bash
+git clone https://github.com/pavankavade/chatterbox-Audiobook-api.git
+cd /kaggle/working/chatterbox-Audiobook-api
+pip install -r requirements.txt
+pip install -e .
+pip install pyngrok
+```
+
+```
+
+# python
+import os
+# set token in this session (do NOT print it)
+os.environ["NGROK_AUTHTOKEN"] = ""
+# also set it for pyngrok if needed
+from pyngrok import ngrok
+ngrok.set_auth_token(os.environ["NGROK_AUTHTOKEN"])
+
+```
+
+```
+%%bash
+cd /kaggle/working/chatterbox-Audiobook-api/src
+python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
+
+```
+
+```
+# python
+from pyngrok import ngrok
+public_url = ngrok.connect(8000, "http").public_url
+print("Public URL:", public_url)
+
+```

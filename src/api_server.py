@@ -9,6 +9,8 @@ import threading
 import time
 import torch
 from pathlib import Path
+from pyngrok import ngrok
+import uvicorn
 
 app = FastAPI(title="Chatterbox TTS API")
 
@@ -176,3 +178,9 @@ def status():
         "loading": MODEL.get("loading", False),
         "device": MODEL.get("device", "cpu"),
     }
+
+if __name__ == "__main__":
+    port = 8000
+    public_url = ngrok.connect(port, "http").public_url
+    print(f"Public URL: {public_url}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
