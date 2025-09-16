@@ -181,6 +181,8 @@ def status():
 
 if __name__ == "__main__":
     port = 8000
-    public_url = ngrok.connect(port, "http").public_url
+    # Use the 'domain' parameter to specify your static ngrok domain
+    public_url = ngrok.connect(port, "http", domain="umbrellaless-meghan-subovarian.ngrok-free.app").public_url
     print(f"Public URL: {public_url}")
+    # It's good practice to bind to 0.0.0.0 to make it accessible within the container/VM
     uvicorn.run(app, host="0.0.0.0", port=port)
