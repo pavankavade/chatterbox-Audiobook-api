@@ -104,7 +104,7 @@ async def synthesize(
     temperature: float = Form(0.8),
 ):
     """Synthesize speech for `text`. Optionally provide `ref_audio` (wav/mp3).
-    If not provided, fallback to /notebooklmvoicesample.mp3.
+    If not provided, fallback to /notebooklmsamplevoice.mp3.
     """
     ensure_model()
     tts = MODEL["tts"]
@@ -133,7 +133,7 @@ async def synthesize(
 
     # Case 2: fallback to hardcoded sample
     else:
-        default_ref = Path("/notebooklmvoicesample.mp3")
+        default_ref = Path("/notebooklmsamplevoice.mp3")
         if not default_ref.exists():
             raise HTTPException(status_code=500, detail="Default reference file not found")
         try:
