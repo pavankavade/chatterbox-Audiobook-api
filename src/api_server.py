@@ -109,21 +109,22 @@ async def synthesize(
     cfg_weight: float = Form(0.5),
     temperature: float = Form(0.8),
 ):
-    """Synthesize speech for `text`. Optionally provide `ref_audio` (wav) to condition voice."""
+    """Synthesize speech for `text`. Optionally provide `ref_audio` (wav) to condition voice.
+    If not provided, a default sample from /notebooklmvoicesample.mp3 will be used.
+    """
     ensure_model()
     tts = MODEL["tts"]
 
-    # If ref_audio provided, save to temp and prepare conditionals
-    conds = tts.conds
+    conds = tts.conds  # default conditionals
+
+    # Case 1: user uploaded reference audio
     if ref_audio is not None:
         contents = await ref_audio.read()
         try:
-            # read into numpy via soundfile
             data, sr = sf.read(io.BytesIO(contents))
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid audio file: {e}")
 
-        # write to a temporary file for prepare_conditionals which expects a path
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
             tmp_name = tf.name
             tf.write(contents)
@@ -136,6 +137,17 @@ async def synthesize(
             except Exception:
                 pass
 
+    # Case 2: fallback to hardcoded sample
+    else:
+        default_ref = Path("/notebooklmvoicesample.mp3")
+        if not default_ref.exists():
+            raise HTTPException(status_code=500, detail="Default reference file not found")
+        try:
+            conds = tts.prepare_conditionals(str(default_ref), exaggeration=exaggeration)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to use default reference: {e}")
+
+    # Generate audio
     with torch.no_grad():
         wav_tensor = tts.generate(
             text=text,
@@ -145,14 +157,13 @@ async def synthesize(
             temperature=temperature,
         )
 
-    # wav_tensor is (1, n_samples)
     wav = wav_tensor.squeeze(0).cpu().numpy()
-
     buf = io.BytesIO()
     sf.write(buf, wav, tts.sr, format="WAV")
     buf.seek(0)
 
     return StreamingResponse(buf, media_type="audio/wav")
+
 
 
 @app.post("/load_models")
