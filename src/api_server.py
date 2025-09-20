@@ -145,7 +145,7 @@ async def synthesize(
 
     # Case 2: fallback to hardcoded sample
     else:
-        default_ref = Path(__file__).parent / "notebooklmvoicesample.mp3"
+        default_ref = Path(__file__).parent / "notebooklmsamplevoice.mp3"
         if not default_ref.exists():
             raise HTTPException(status_code=500, detail="Default reference file not found")
         try:
