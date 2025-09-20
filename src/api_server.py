@@ -37,8 +37,16 @@ MODEL = {
 @app.on_event("startup")
 def load_models_startup():
     """Try to load models automatically when the server starts."""
-    print("🚀 Starting server... Loading models in background.")
+    if torch.cuda.is_available():
+        MODEL["device"] = "cuda"
+        MODEL["note"] = "GPU available, using CUDA"
+    else:
+        MODEL["device"] = "cpu"
+        MODEL["note"] = "CUDA not available, using CPU"
+
+    print(f"🚀 Starting server... Loading models in background on {MODEL['device']}.")
     start_background_load()
+
 
 
 def load_models_sync(device: str = "cpu"):
@@ -88,9 +96,13 @@ def start_background_load():
 def ensure_model():
     """Ensure the model is loaded. If not, load it synchronously."""
     if not MODEL.get("loaded"):
-        print("⚠️ Model not loaded. Loading synchronously...")
+        if torch.cuda.is_available():
+            MODEL["device"] = "cuda"
+        else:
+            MODEL["device"] = "cpu"
+        print(f"⚠️ Model not loaded. Loading synchronously on {MODEL['device']}...")
         try:
-            load_models_sync(MODEL.get("device", "cpu"))
+            load_models_sync(MODEL.get("device"))
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"Model load failed: {e}")
 
