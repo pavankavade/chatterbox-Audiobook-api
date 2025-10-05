@@ -229,7 +229,7 @@ def status():
 if __name__ == "__main__":
     port = 8000
     public_url = ngrok.connect(
-        port, "http", domain="umbrellaless-meghan-subovarian.ngrok-free.app"
+        port, "http", domain="variolous-londa-patiently.ngrok-free.dev"
     ).public_url
     print(f"Public URL: {public_url}")
     uvicorn.run(app, host="0.0.0.0", port=port)
