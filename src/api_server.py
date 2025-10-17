@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import io
+import os
 import soundfile as sf
 import tempfile
 import threading
@@ -229,7 +230,7 @@ def status():
 if __name__ == "__main__":
     port = 8000
     public_url = ngrok.connect(
-        port, "http", domain="variolous-londa-patiently.ngrok-free.dev"
+        port, "http", domain=os.environ["NGROK_URL"]
     ).public_url
     print(f"Public URL: {public_url}")
     uvicorn.run(app, host="0.0.0.0", port=port)
